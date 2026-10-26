@@ -48,8 +48,8 @@ if [ ! -f "$mbedtls_source/CMakeLists.txt" ]; then
 	echo "f16ba9cdec40b3063854962c870f7ab6b05ff9666f0acb5965ebcb163443e998  $mbedtls_archive" | shasum -a 256 -c -
 	tar -xzf "$mbedtls_archive" --strip-components 1 -C "$mbedtls_source"
 fi
-if ! "$python_env/bin/python" -c 'import google.protobuf; assert google.protobuf.__version__ == "7.36.0"' 2>/dev/null; then
-	"$python_env/bin/python" -m pip install --disable-pip-version-check 'protobuf==7.36.0'
+if ! "$python_env/bin/python" -c 'import google.protobuf; assert google.protobuf.__version__ == "7.36.2"' 2>/dev/null; then
+	"$python_env/bin/python" -m pip install --disable-pip-version-check 'protobuf==7.36.2'
 fi
 
 cmake -S "$repo_dir" -B "$build_dir" -G Ninja \
