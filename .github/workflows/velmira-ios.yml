@@ -1,0 +1,35 @@
+name: Build Velmira iOS (unsigned)
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Check controller behavior
+        run: |
+          swiftc ios/TPPlay/Features/AI/TrackingEngine.swift ios/TPPlay/Features/AI/ColorTargetDetector.swift ios/Tests/main.swift -o /tmp/velmira-checks
+          /tmp/velmira-checks
+      - name: Install build dependencies
+        run: brew install cmake ninja protobuf pkg-config
+      - name: Build native iPhone application
+        run: bash scripts/build-velmira-ios.sh
+      - name: Upload unsigned application
+        uses: actions/upload-artifact@v4
+        with:
+          name: Velmira-iOS-UNSIGNED
+          path: build/Velmira-iOS-UNSIGNED.ipa
+          if-no-files-found: error
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Velmira-build-log
+          path: build/xcodebuild.log

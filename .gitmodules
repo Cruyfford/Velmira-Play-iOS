@@ -1,0 +1,12 @@
+[submodule "third-party/nanopb"]
+	path = third-party/nanopb
+	url = https://github.com/nanopb/nanopb.git
+[submodule "third-party/jerasure"]
+	path = third-party/jerasure
+	url = https://github.com/streetpea/jerasure.git
+[submodule "third-party/gf-complete"]
+	path = third-party/gf-complete
+	url = https://github.com/streetpea/gf-complete.git
+[submodule "third-party/curl"]
+	path = third-party/curl
+	url = https://github.com/curl/curl
