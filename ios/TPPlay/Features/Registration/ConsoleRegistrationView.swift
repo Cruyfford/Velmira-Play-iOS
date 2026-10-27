@@ -19,9 +19,37 @@ struct ConsoleRegistrationView: View {
         return data
     }
 
+    // PS5 pairing code, not a PSN account ID. Normalize at the keyboard
+    // boundary so typing/pasting the eighth digit changes state only.
+    private static func normalizePairingCode(_ value: String) -> String {
+        var result = ""
+        for scalar in value.unicodeScalars {
+            let code = scalar.value
+            let digit: UInt32
+            switch code {
+            case 48...57:
+                digit = code - 48
+            case 0x0660...0x0669:
+                digit = code - 0x0660
+            case 0x06F0...0x06F9:
+                digit = code - 0x06F0
+            default:
+                continue
+            }
+            result.append(String(digit))
+            if result.count == 8 { break }
+        }
+        return result
+    }
+
+    private var pairingCode: Binding<String> {
+        Binding(
+            get: { pin },
+            set: { pin = Self.normalizePairingCode($0) }
+        )
+    }
+
     private var validPIN: UInt32? {
-        // The registration protocol expects eight ASCII decimal digits only.
-        // Unicode numeric glyphs may look correct but fail protocol parsing.
         guard pin.utf8.count == 8,
               pin.utf8.allSatisfy({ (48...57).contains($0) }) else { return nil }
         return UInt32(pin)
@@ -50,18 +78,19 @@ struct ConsoleRegistrationView: View {
                             .textFieldStyle(AcidFieldStyle())
                     }
                     fieldBlock("REMOTE PLAY // 8-DIGIT PIN") {
-                        SecureField("00000000", text: $pin)
+                        // A numeric TextField avoids SecureField+oneTimeCode
+                        // autofill transitions while the eighth digit is typed.
+                        TextField("00000000", text: pairingCode)
                             .keyboardType(.numberPad)
-                            .textContentType(.oneTimeCode)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
                             .textFieldStyle(AcidFieldStyle())
-                        Text("على PS5: الإعدادات ← النظام ← اللعب عن بُعد ← إقران الجهاز. اترك شاشة الرمز مفتوحة واكتب الأرقام الثمانية الحالية.")
+                        Text("رمز ربط PS5: \(pin.count) من 8 أرقام")
                             .font(.caption2)
                             .foregroundStyle(TPPlayTheme.secondaryText)
-                        if !pin.isEmpty && validPIN == nil {
-                            Text("يجب إدخال ثمانية أرقام إنجليزية من 0 إلى 9.")
-                                .font(.caption2)
-                                .foregroundStyle(TPPlayTheme.danger)
-                        }
+                        Text("من إعدادات PS5 ← النظام ← اللعب عن بُعد ← إقران الجهاز. إدخال الأرقام وحده لا يبدأ الاتصال؛ اضغط «ربط الجهاز» بعد اكتمال الرمز.")
+                            .font(.caption2)
+                            .foregroundStyle(TPPlayTheme.secondaryText)
                     }
 
                     VStack(alignment: .leading, spacing: 10) {
