@@ -524,6 +524,7 @@ private struct TouchPresetDeleteDialog: View {
     }
 }
 
+@MainActor
 @ViewBuilder
 private func dialogHeader(_ title: String, code: String, danger: Bool = false) -> some View {
     HStack(spacing: 10) {

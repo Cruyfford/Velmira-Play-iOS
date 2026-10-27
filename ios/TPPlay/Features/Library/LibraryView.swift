@@ -1055,9 +1055,8 @@ struct PSNProfilePreview {
                 : "PLAYING \(currentGame.uppercased())"
         }
         switch isOnline {
-        case true: return "ONLINE"
-        case false: return "OFFLINE"
-        case nil: return "STATUS UNAVAILABLE"
+        case .some(let online): return online ? "ONLINE" : "OFFLINE"
+        case .none: return "STATUS UNAVAILABLE"
         }
     }
     var initials: String {
