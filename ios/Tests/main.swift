@@ -74,3 +74,26 @@ var blue = ColorTrackingConfiguration(); blue.hue = 0.66
 let rejected = try ColorTargetDetector.detect(buffer, configuration: blue)
 require(rejected.isEmpty, "Blue selection rejects red pixels")
 print("Color detector checks passed")
+
+
+// Conservative image detection verification: no one-frame false positives.
+var persistence = StableDetectionFilter()
+let markA = CGRect(x: 0.20, y: 0.40, width: 0.08, height: 0.04)
+let markB = CGRect(x: 0.75, y: 0.40, width: 0.08, height: 0.04)
+require(persistence.update([markA], at: 20.0).isEmpty, "First frame must not confirm a marker")
+require(persistence.update([markA], at: 20.2).isEmpty, "Second frame must not confirm a marker")
+let firstConfirmed = persistence.update([markA], at: 20.4)
+require(firstConfirmed.count == 1, "Three consecutive samples confirm a marker")
+require(persistence.update([markB], at: 20.6).isEmpty, "Distant marker must start new confirmation")
+require(persistence.update([markB], at: 20.6).isEmpty, "Repeated timestamp must not count twice")
+require(persistence.update([markB], at: 20.8).isEmpty, "Second sample at new location is unconfirmed")
+let secondConfirmed = persistence.update([markB], at: 21.0)
+require(secondConfirmed.count == 1 && secondConfirmed[0].id != firstConfirmed[0].id,
+        "New marker must not inherit old persistent identifier")
+require(persistence.update([], at: 21.2).isEmpty, "Missing sample revokes confirmation")
+require(persistence.update([markB], at: 21.4).isEmpty, "Reappearance starts new confirmation")
+require(persistence.update([CGRect(x: -0.1, y: 0.4, width: 0.1, height: 0.1)],
+                           at: 21.6).isEmpty, "Out-of-bounds coordinates must be discarded")
+persistence.reset()
+require(persistence.update([markA], at: 30).isEmpty, "Reset removes prior state")
+print("StableDetectionFilter verification checks passed")
