@@ -50,7 +50,7 @@ struct RemotePlayView: View {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
                     Button {
-                        session.suspendAssistance()
+                        session.suspendAssistance(preserveActivation: true)
                         if let image = session.calibrationFrames.image() {
                             calibrationShot = CalibrationShot(image: image)
                         } else {
@@ -64,12 +64,25 @@ struct RemotePlayView: View {
                     }.background(.black.opacity(0.7), in: Capsule())
                     .accessibilityLabel("إظهار أو إخفاء لوحة الأداء")
                     Spacer(minLength: 0)
-                    Text(assistance.armed ? "المساعدة مفعّلة" : "المساعدة متوقفة")
-                        .font(.caption2).padding(8).background(.black.opacity(0.7), in: Capsule())
+                    if assistance.armed {
+                        Text("المساعدة مفعّلة")
+                            .font(.caption2).padding(8).background(.black.opacity(0.7), in: Capsule())
+                    } else {
+                        Button("تشغيل") { assistance.armed = true }
+                            .padding(12).background(.green.opacity(0.8), in: Capsule())
+                            .accessibilityLabel("تفعيل المساعدة يدويًا")
+                    }
                     Button("إيقاف") { session.stopAssistanceNow() }
                         .padding(12).background(.red.opacity(0.9), in: Capsule())
                         .accessibilityLabel("إيقاف جميع المساعدات فوراً")
                 }.font(.caption.bold()).foregroundStyle(.white)
+                if !assistance.armed, let reason = assistance.lastStopReason {
+                    Text("توقفت المساعدة: \(reason)")
+                        .font(.caption2)
+                        .foregroundStyle(.white)
+                        .padding(7)
+                        .background(.black.opacity(0.7), in: Capsule())
+                }
                 if showMetrics { performancePanel }
                 Spacer()
             }.padding().zIndex(10)
@@ -196,7 +209,7 @@ struct RemotePlayView: View {
                     session.requestVideoRefresh()
                 }
             } else if phase == .background {
-                session.suspendAssistance()
+                session.suspendAssistance(reason: "انتقل التطبيق إلى الخلفية")
                 AIFrameAnalyzer.shared.setPaused(true)
                 AIAnalysisState.shared.clear()
                 UIApplication.shared.isIdleTimerDisabled = false
