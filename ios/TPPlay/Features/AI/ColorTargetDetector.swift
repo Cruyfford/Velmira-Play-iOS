@@ -86,3 +86,69 @@ enum ColorTargetDetector {
         return Array(boxes.sorted { $0.width * $0.height > $1.width * $1.height }.prefix(64))
     }
 }
+
+
+/// Conservative multi-frame confirmation for image detections.
+/// A stable marker does not prove that it is an enemy or that accuracy is 99%.
+struct StableDetectionFilter {
+    struct Verified {
+        let index: Int
+        let id: UUID
+    }
+
+    private struct Track {
+        let id: UUID
+        let box: CGRect
+        let hits: Int
+    }
+
+    private var tracks: [Track] = []
+    private var previousTimestamp: TimeInterval?
+
+    mutating func reset() {
+        tracks.removeAll()
+        previousTimestamp = nil
+    }
+
+    mutating func update(_ boxes: [CGRect], at timestamp: TimeInterval, requiredFrames: Int = 3) -> [Verified] {
+        guard timestamp.isFinite, requiredFrames > 0 else { reset(); return [] }
+        if let previousTimestamp {
+            guard timestamp > previousTimestamp else { return [] }
+            if timestamp - previousTimestamp > 0.85 { tracks.removeAll() }
+        }
+        previousTimestamp = timestamp
+
+        var available = Set(tracks.indices)
+        var next: [Track] = []
+        var verified: [Verified] = []
+        for (index, box) in boxes.enumerated() {
+            guard box.minX.isFinite, box.minY.isFinite, box.maxX.isFinite, box.maxY.isFinite,
+                  box.width > 0, box.height > 0,
+                  box.minX >= 0, box.minY >= 0, box.maxX <= 1, box.maxY <= 1 else { continue }
+            let best = available.compactMap { i -> (Int, CGFloat)? in
+                let old = tracks[i].box
+                let dx = abs(old.midX - box.midX)
+                let dy = abs(old.midY - box.midY)
+                let limitX = max(0.025, min(0.10, max(old.width, box.width) * 1.0))
+                let limitY = max(0.02, min(0.09, max(old.height, box.height) * 1.0))
+                let ratio = (box.width * box.height) / (old.width * old.height)
+                guard dx <= limitX, dy <= limitY, ratio >= 0.40, ratio <= 2.5 else { return nil }
+                let score = dx / limitX + dy / limitY + abs(1 - ratio) * 0.25
+                return (i, score)
+            }.min { $0.1 < $1.1 }
+
+            let item: Track
+            if let oldIndex = best?.0 {
+                available.remove(oldIndex)
+                item = Track(id: tracks[oldIndex].id, box: box, hits: min(50, tracks[oldIndex].hits + 1))
+            } else {
+                item = Track(id: UUID(), box: box, hits: 1)
+            }
+            next.append(item)
+            if item.hits >= requiredFrames { verified.append(Verified(index: index, id: item.id)) }
+        }
+        // A missing observation resets the track, preferring precision over recall.
+        tracks = next
+        return verified
+    }
+}
