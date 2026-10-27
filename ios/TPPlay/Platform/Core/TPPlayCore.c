@@ -45,6 +45,7 @@ struct TPPlaySession {
 	atomic_bool logged_audio_settings;
 	atomic_bool logged_first_audio_frame;
 	atomic_uint_fast64_t video_sample_count;
+	atomic_uint_fast64_t connection_rtt_us;
 	ChiakiLog *holepunch_log;
 };
 
@@ -120,6 +121,8 @@ static void tp_play_session_event_callback(ChiakiEvent *event, void *context)
 {
 	TPPlaySession *session = context;
 	int value = 0;
+	if(event->type == CHIAKI_EVENT_CONNECTED)
+		atomic_store(&session->connection_rtt_us, session->session.rtt_us);
 	const char *message = NULL;
 	if(event->type == CHIAKI_EVENT_QUIT)
 	{
@@ -463,6 +466,7 @@ static TPPlaySession *tp_play_session_create_common(
 			*error_code = CHIAKI_ERR_MEMORY;
 		return NULL;
 	}
+	atomic_init(&result->connection_rtt_us, 0);
 	result->event_callback = event_callback;
 	result->video_callback = video_callback;
 	result->audio_settings_callback = audio_settings_callback;
@@ -720,4 +724,13 @@ int tp_play_session_set_login_pin(TPPlaySession *session, const char *pin)
 	if(!session || !pin)
 		return CHIAKI_ERR_INVALID_DATA;
 	return chiaki_session_set_login_pin(&session->session, (const uint8_t *)pin, strlen(pin));
+}
+
+bool tp_play_session_metrics(TPPlaySession *session, uint64_t *received, uint64_t *lost, uint64_t *rtt_us)
+{
+    if(!session || !session->started || !received || !lost || !rtt_us)
+        return false;
+    chiaki_packet_stats_get(&session->session.stream_connection.packet_stats, false, received, lost);
+    *rtt_us = atomic_load(&session->connection_rtt_us);
+    return true;
 }

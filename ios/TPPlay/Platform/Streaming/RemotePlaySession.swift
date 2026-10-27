@@ -37,6 +37,10 @@ final class RemotePlaySession: ObservableObject {
     }
 
     @Published private(set) var state: State = .connecting(.contacting)
+    @Published private(set) var measuredFPS = 0.0
+    @Published private(set) var packetLoss: Double?
+    @Published private(set) var connectionRTT: Double?
+    nonisolated let calibrationFrames = CalibrationFrames()
     let renderer: MetalVideoRenderer
 
     nonisolated(unsafe) private var session: OpaquePointer?
@@ -75,7 +79,8 @@ final class RemotePlaySession: ObservableObject {
         )
         self.onConnected = onConnected
         videoDecoder = VideoDecoder(hevc: isPS5)
-        videoDecoder.onFrame = { [renderer] frame in
+        videoDecoder.onFrame = { [renderer, calibrationFrames] frame in
+            calibrationFrames.accept(frame)
             renderer.display(frame)
             AIFrameAnalyzer.shared.submit(frame)
         }
@@ -236,6 +241,8 @@ final class RemotePlaySession: ObservableObject {
 
         suspendAssistance()
         isStopped = true
+        calibrationFrames.clear()
+        measuredFPS = 0; packetLoss = nil; connectionRTT = nil
         AIAnalysisState.shared.clear()
         AIFrameAnalyzer.shared.setPaused(true)
         for (_, override) in homeGestureOverrides {
@@ -307,6 +314,8 @@ final class RemotePlaySession: ObservableObject {
             var rendererStallStarted: UInt64?
             var lastDecodedOutputAt = DispatchTime.now().uptimeNanoseconds
             var ticks = 0
+            var metricsTime = ProcessInfo.processInfo.systemUptime
+            var metricsFrames: UInt64 = 0
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(250))
                 guard !Task.isCancelled, let self, !self.isStopped else { return }
@@ -356,6 +365,21 @@ final class RemotePlaySession: ObservableObject {
                 previousDrawn = renderSnapshot.drawnFrames
                 ticks += 1
                 if ticks % 4 == 0 {
+                    let timestamp = ProcessInfo.processInfo.systemUptime
+                    let elapsed = timestamp - metricsTime
+                    self.measuredFPS = elapsed > 0 ? Double(renderSnapshot.drawnFrames &- metricsFrames) / elapsed : 0
+                    metricsTime = timestamp
+                    metricsFrames = renderSnapshot.drawnFrames
+                    if let handle = self.session {
+                        var received: UInt64 = 0
+                        var lost: UInt64 = 0
+                        var rtt: UInt64 = 0
+                        if tp_play_session_metrics(handle, &received, &lost, &rtt) {
+                            let total = Double(received) + Double(lost)
+                            self.packetLoss = total > 0 ? Double(lost) * 100 / total : nil
+                            self.connectionRTT = rtt > 0 ? Double(rtt) / 1000 : nil
+                        }
+                    }
                     print("[TPPLAY-DIAG] video health: input=\(snapshot.inputFrames) output=\(snapshot.outputFrames) decodeQueue=\(snapshot.queuedFrames) renderer=\(renderSnapshot.receivedFrames)/\(renderSnapshot.drawnFrames)")
                 }
             }
@@ -607,6 +631,12 @@ final class RemotePlaySession: ObservableObject {
         }
     }
 
+    func stopAssistanceNow() {
+        AssistanceState.shared.emergencyStop()
+        assistanceEngine.reset()
+        sendController()
+    }
+
     func resumeAssistance() {
         inputSuspended = false
         assistanceEngine.reset()
@@ -651,6 +681,8 @@ final class RemotePlaySession: ObservableObject {
             streamHealthTask = nil
             renderer.stopBufferedPlayback()
             audioPlayer.stop()
+            calibrationFrames.clear()
+            measuredFPS = 0; packetLoss = nil; connectionRTT = nil
             state = .ended(message ?? "Remote Play ended (reason \(value)).")
         default: break
         }

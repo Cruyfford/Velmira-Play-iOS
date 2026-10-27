@@ -151,6 +151,8 @@ void tp_play_session_destroy(TPPlaySession *session);
 int tp_play_session_set_controller(TPPlaySession *session, const TPPlayControllerState *state);
 int tp_play_session_set_login_pin(TPPlaySession *session, const char *pin);
 
+bool tp_play_session_metrics(TPPlaySession *session, uint64_t *received, uint64_t *lost, uint64_t *rtt_us);
+
 #ifdef __cplusplus
 }
 #endif

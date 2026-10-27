@@ -1,4 +1,8 @@
 import SwiftUI
+import GameController
+import CoreVideo
+import CoreImage
+import UIKit
 
 @MainActor
 final class AssistanceState: ObservableObject {
@@ -162,5 +166,311 @@ private struct BodyPointPicker: View {
                     .offset(x: bodyLeft, y: bodyTop)
             }
         }.frame(height: 350).environment(\.layoutDirection, .leftToRight)
+    }
+}
+
+struct GameProfile: Codable, Identifiable {
+    var id = UUID()
+    var name: String
+    var assistance: AssistanceConfiguration
+    var hue: Double
+    var tolerance: Double
+    var colorMode: Bool
+    var threshold: Double
+    var rate: Double
+    var resolution: Int
+    var fps: Int
+    var bitrate: Int
+}
+@MainActor
+final class GameProfiles: ObservableObject {
+    static let shared = GameProfiles()
+    @Published var profiles: [GameProfile] = []
+    @Published var message = ""
+    private let key = "velmira.gameProfiles.v1"
+    init() {
+        if let data = UserDefaults.standard.data(forKey: key) {
+            do { profiles = try JSONDecoder().decode([GameProfile].self, from: data) }
+            catch { message = "تعذر قراءة ملفات الإعدادات المحفوظة." }
+        }
+    }
+    private func persist() {
+        do { UserDefaults.standard.set(try JSONEncoder().encode(profiles), forKey: key) }
+        catch { message = "تعذر حفظ الإعدادات." }
+    }
+    func save(_ name: String) {
+        let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return }
+        let ai = AIAnalysisState.shared
+        let defaults = UserDefaults.standard
+        profiles.append(GameProfile(name: clean, assistance: AssistanceState.shared.configuration,
+            hue: ai.colorHue, tolerance: ai.colorTolerance, colorMode: ai.colorMode,
+            threshold: ai.threshold, rate: ai.rate,
+            resolution: defaults.object(forKey: "streamResolution") as? Int ?? 1080,
+            fps: defaults.object(forKey: "streamFPS") as? Int ?? 60,
+            bitrate: defaults.object(forKey: "streamBitrate") as? Int ?? 15000))
+        message = "تم حفظ ملف جديد."
+        persist()
+    }
+    func apply(_ profile: GameProfile) {
+        AssistanceState.shared.emergencyStop()
+        AssistanceState.shared.configuration = profile.assistance
+        let ai = AIAnalysisState.shared
+        ai.enabled = false
+        ai.colorHue = profile.hue; ai.colorTolerance = profile.tolerance
+        ai.colorMode = profile.colorMode; ai.threshold = profile.threshold; ai.rate = profile.rate
+        let defaults = UserDefaults.standard
+        defaults.set(profile.resolution, forKey: "streamResolution")
+        defaults.set(profile.fps, forKey: "streamFPS")
+        defaults.set(profile.bitrate, forKey: "streamBitrate")
+        message = "تم تطبيق «\(profile.name)». المساعدات متوقفة؛ جودة البث تطبق عند الاتصال التالي."
+    }
+    func remove(_ id: UUID) { profiles.removeAll { $0.id == id }; persist() }
+}
+struct VelmiraToolsView: View {
+    @ObservedObject private var profiles = GameProfiles.shared
+    @AppStorage("velmira.showMetrics") private var showMetrics = true
+    @State private var name = ""
+    @State private var deleteID: UUID?
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 16) {
+                    VelmiraSection("أدوات البث") {
+                        Toggle("عرض لوحة الأداء أثناء البث", isOn: $showMetrics)
+                        Text("داخل شاشة PS5 اضغط «معايرة»: اختر لون الاسم، ثم موضع التصويب على لقطة ثابتة. يمكنك حفظ اللون وحده أو حفظ النقطتين.")
+                            .font(.footnote)
+                        Text("زر إيقاف المساعدات يبقى ظاهراً داخل البث.").font(.footnote)
+                    }
+                    NavigationLink { ControllerTestView() } label: {
+                        Label("اختبار يد التحكم", systemImage: "gamecontroller")
+                            .frame(maxWidth: .infinity, minHeight: 52)
+                    }.buttonStyle(AcidButtonStyle(active: true))
+                    VelmiraSection("ملفات إعدادات الألعاب") {
+                        TextField("اسم اللعبة أو ملف الإعدادات", text: $name).textFieldStyle(AcidFieldStyle())
+                        Button("حفظ الإعدادات الحالية كملف جديد") { profiles.save(name); name = "" }
+                            .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        Text("يحفظ اللون، إعدادات التحليل، حساسية المساعدة، الماكروز وجودة البث. لا يحفظ بيانات حسابك أو صور البث.")
+                            .font(.footnote)
+                        Text(profiles.message).font(.footnote)
+                    }
+                    ForEach(profiles.profiles) { profile in
+                        VelmiraSection(profile.name) {
+                            HStack {
+                                Button("تطبيق") { profiles.apply(profile) }
+                                Spacer()
+                                Button("حذف", role: .destructive) { deleteID = profile.id }
+                            }
+                        }
+                    }
+                }.padding(20)
+            }.background(TPPlayTheme.canvas)
+                .navigationTitle("الأدوات").navigationBarTitleDisplayMode(.inline)
+                .confirmationDialog("حذف ملف الإعدادات؟", isPresented: Binding(
+                    get: { deleteID != nil }, set: { if !$0 { deleteID = nil } })) {
+                    Button("حذف", role: .destructive) {
+                        if let id = deleteID { profiles.remove(id) }
+                        deleteID = nil
+                    }
+                }
+        }.environment(\.layoutDirection, .rightToLeft)
+    }
+}
+struct ControllerTestView: View {
+    var body: some View {
+        ScrollView {
+            TimelineView(.periodic(from: .now, by: 0.05)) { _ in
+                VStack(spacing: 16) {
+                    Text("اختبار محلي فقط؛ لا يرسل أوامر إلى PS5.").font(.footnote)
+                    if let controller = GCController.controllers().first(where: { $0.extendedGamepad != nil }),
+                       let pad = controller.extendedGamepad {
+                        VelmiraSection(controller.vendorName ?? "يد تحكم متصلة") {
+                            Text(pad is GCDualSenseGamepad ? "DualSense متصلة" : "يد تحكم متصلة")
+                            trigger("L2", value: pad.leftTrigger.value)
+                            trigger("R2", value: pad.rightTrigger.value)
+                            stick("العصا اليسرى", input: pad.leftThumbstick)
+                            stick("العصا اليمنى", input: pad.rightThumbstick)
+                            HStack {
+                                key("✕", pressed: pad.buttonA.isPressed)
+                                key("○", pressed: pad.buttonB.isPressed)
+                                key("□", pressed: pad.buttonX.isPressed)
+                                key("△", pressed: pad.buttonY.isPressed)
+                            }
+                            HStack {
+                                key("L1", pressed: pad.leftShoulder.isPressed)
+                                key("R1", pressed: pad.rightShoulder.isPressed)
+                                key("L3", pressed: pad.leftThumbstickButton?.isPressed ?? false)
+                                key("R3", pressed: pad.rightThumbstickButton?.isPressed ?? false)
+                            }
+                        }
+                    } else {
+                        VelmiraSection("لا توجد يد متصلة") {
+                            Text("اربط يد DualSense بالآيفون من إعدادات Bluetooth ثم عد إلى هذه الصفحة.")
+                        }
+                    }
+                }.padding(20)
+            }
+        }.background(TPPlayTheme.canvas)
+            .navigationTitle("اختبار اليد").navigationBarTitleDisplayMode(.inline)
+    }
+    private func trigger(_ title: String, value: Float) -> some View {
+        VStack(alignment: .leading) {
+            Text("\(title): \(Int(value * 100))٪").monospacedDigit()
+            ProgressView(value: Double(value)).tint(.cyan)
+        }
+    }
+    private func stick(_ title: String, input: GCControllerDirectionPad) -> some View {
+        VStack(alignment: .leading) {
+            Text(title)
+            Text(String(format: "X: %.2f   Y: %.2f", input.xAxis.value, input.yAxis.value))
+                .monospacedDigit().environment(\.layoutDirection, .leftToRight)
+        }
+    }
+    private func key(_ title: String, pressed: Bool) -> some View {
+        Text(title).frame(maxWidth: .infinity, minHeight: 42)
+            .background(pressed ? Color.cyan : TPPlayTheme.canvas, in: RoundedRectangle(cornerRadius: 10))
+            .foregroundStyle(pressed ? Color.black : Color.white)
+    }
+}
+
+// Retain one decoded frame only. Conversion happens on demand, never per frame.
+final class CalibrationFrames: @unchecked Sendable {
+    private let lock = NSLock()
+    private var frame: CVPixelBuffer?
+    private var capturedAt: TimeInterval = 0
+    private var closed = false
+    func accept(_ value: CVPixelBuffer) {
+        lock.lock(); defer { lock.unlock() }
+        guard !closed else { return }
+        frame = value; capturedAt = ProcessInfo.processInfo.systemUptime
+    }
+    func clear() {
+        lock.lock(); defer { lock.unlock() }
+        closed = true; frame = nil
+    }
+    func image() -> CGImage? {
+        lock.lock()
+        let current = frame
+        let fresh = ProcessInfo.processInfo.systemUptime - capturedAt < 1
+        lock.unlock()
+        guard fresh, let current else { return nil }
+        let image = CIImage(cvPixelBuffer: current)
+        return CIContext().createCGImage(image, from: image.extent)
+    }
+}
+struct CalibrationShot: Identifiable {
+    let id = UUID()
+    let image: CGImage
+}
+struct StreamCalibrationView: View {
+    let shot: CalibrationShot
+    @Environment(\.dismiss) private var dismiss
+    @State private var marker: CGPoint?
+    @State private var aim: CGPoint?
+    @State private var hue: Double?
+    @State private var editingMarker = true
+    @State private var message = ""
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 16) {
+                    Text("لقطة ثابتة من بثك • إدخال التحكم متوقف حتى إغلاق المعايرة.")
+                        .font(.footnote)
+                    Picker("النقطة", selection: $editingMarker) {
+                        Text("١ • الاسم واللون").tag(true)
+                        Text("٢ • موضع التصويب").tag(false)
+                    }.pickerStyle(.segmented)
+                    GeometryReader { geo in
+                        let ratio = CGFloat(shot.image.width) / CGFloat(shot.image.height)
+                        let width = min(geo.size.width, geo.size.height * ratio)
+                        let height = width / ratio
+                        let left = (geo.size.width - width) / 2
+                        let top = (geo.size.height - height) / 2
+                        ZStack(alignment: .topLeading) {
+                            Color.black
+                            Image(decorative: shot.image, scale: 1)
+                                .resizable().frame(width: width, height: height).offset(x: left, y: top)
+                            if let marker {
+                                Circle().stroke(Color.red, lineWidth: 3).frame(width: 24, height: 24)
+                                    .position(x: left + marker.x * width, y: top + marker.y * height)
+                            }
+                            if let aim {
+                                Circle().stroke(Color.cyan, lineWidth: 3).frame(width: 24, height: 24)
+                                    .position(x: left + aim.x * width, y: top + aim.y * height)
+                            }
+                            if let marker, let aim {
+                                Path { path in
+                                    path.move(to: CGPoint(x: left + marker.x * width, y: top + marker.y * height))
+                                    path.addLine(to: CGPoint(x: left + aim.x * width, y: top + aim.y * height))
+                                }.stroke(Color.white.opacity(0.7), style: StrokeStyle(lineWidth: 1, dash: [4]))
+                            }
+                        }.contentShape(Rectangle())
+                            .gesture(DragGesture(minimumDistance: 0).onChanged { value in
+                                guard width > 0, height > 0,
+                                      value.location.x >= left, value.location.x <= left + width,
+                                      value.location.y >= top, value.location.y <= top + height else { return }
+                                let point = CGPoint(x: (value.location.x - left) / width, y: (value.location.y - top) / height)
+                                if editingMarker { marker = point; hue = sampleHue(point) }
+                                else { aim = point }
+                            })
+                    }.frame(height: 300).environment(\.layoutDirection, .leftToRight)
+                    Text("المس حرفاً ملوناً قرب منتصف الاسم، ثم اختر النقطة الثانية وضعها على الجسم. يمكنك سحب كل نقطة بعد اختيارها.")
+                        .font(.footnote)
+                    if let hue {
+                        RoundedRectangle(cornerRadius: 8).fill(Color(hue: hue, saturation: 1, brightness: 1)).frame(height: 24)
+                    }
+                    Text(message).font(.footnote).foregroundStyle(.orange)
+                    Button("حفظ اللون فقط") { save(includeOffset: false) }
+                        .frame(maxWidth: .infinity, minHeight: 48).buttonStyle(AcidButtonStyle())
+                        .disabled(hue == nil)
+                    Button("حفظ اللون ومعايرة النقطتين") { save(includeOffset: true) }
+                        .frame(maxWidth: .infinity, minHeight: 48).buttonStyle(AcidButtonStyle(active: true))
+                        .disabled(hue == nil || marker == nil || aim == nil)
+                    Text("الإزاحة ثابتة كنسبة من الصورة؛ أعد المعايرة إذا تغيّرت المسافة أو درجة التقريب. حفظ اللون يختار وضع اللون، ولا يفعّل المساعدات.")
+                        .font(.footnote)
+                }.padding(20)
+            }.background(TPPlayTheme.canvas)
+                .navigationTitle("اللون والمعايرة").navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("إغلاق") { dismiss() } } }
+        }.environment(\.layoutDirection, .rightToLeft)
+    }
+    private func sampleHue(_ point: CGPoint) -> Double? {
+        let x = min(shot.image.width - 1, max(0, Int(point.x * CGFloat(shot.image.width))))
+        let y = min(shot.image.height - 1, max(0, Int(point.y * CGFloat(shot.image.height))))
+        guard let pixel = shot.image.cropping(to: CGRect(x: x, y: y, width: 1, height: 1)) else { return nil }
+        var bytes = [UInt8](repeating: 0, count: 4)
+        let ok = bytes.withUnsafeMutableBytes { raw -> Bool in
+            guard let ctx = CGContext(data: raw.baseAddress, width: 1, height: 1, bitsPerComponent: 8,
+                bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            ctx.draw(pixel, in: CGRect(x: 0, y: 0, width: 1, height: 1)); return true
+        }
+        guard ok else { return nil }
+        let color = UIColor(red: CGFloat(bytes[0]) / 255, green: CGFloat(bytes[1]) / 255,
+                            blue: CGFloat(bytes[2]) / 255, alpha: 1)
+        var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        guard color.getHue(&h, saturation: &s, brightness: &b, alpha: &a), s >= 0.65, b >= 0.45 else {
+            message = "النقطة داكنة جداً أو قليلة اللون؛ المس حرفاً ملوناً من الاسم."
+            return nil
+        }
+        message = ""
+        return Double(h)
+    }
+    private func save(includeOffset: Bool) {
+        guard let hue else { return }
+        if includeOffset {
+            guard let marker, let aim else { return }
+            let dx = Double(aim.x - marker.x), dy = Double(aim.y - marker.y)
+            guard (-0.3...0.3).contains(dx), (-0.1...0.4).contains(dy) else {
+                message = "المسافة بين النقطتين خارج نطاق المعايرة. اختر الاسم والجسم لنفس اللاعب."
+                return
+            }
+            AssistanceState.shared.configuration.colorOffsetX = dx
+            AssistanceState.shared.configuration.colorOffsetY = dy
+        }
+        AssistanceState.shared.emergencyStop()
+        AIAnalysisState.shared.colorHue = hue
+        AIAnalysisState.shared.colorMode = true
+        dismiss()
     }
 }

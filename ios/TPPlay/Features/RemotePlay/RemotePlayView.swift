@@ -8,6 +8,10 @@ struct RemotePlayView: View {
     @ObservedObject private var session: RemotePlaySession
     @ObservedObject private var touchLayouts = TouchLayoutStore.shared
     @ObservedObject private var aiAnalysis = AIAnalysisState.shared
+    @ObservedObject private var assistance = AssistanceState.shared
+    @AppStorage("velmira.showMetrics") private var showMetrics = true
+    @State private var calibrationShot: CalibrationShot?
+    @State private var calibrationError = false
     @State private var loginPIN = ""
     @State private var hasExternalController = false
     @State private var showsVirtualControls = true
@@ -43,16 +47,30 @@ struct RemotePlayView: View {
             AIAnalysisOverlay().ignoresSafeArea()
 
             controls
-            VStack {
-                HStack {
-                    Spacer()
-                    Button("STOP") {
-                        AssistanceState.shared.emergencyStop()
-                    }
-                    .font(.caption.bold()).padding(12)
-                    .background(.red.opacity(0.85), in: Capsule())
-                    .accessibilityLabel("إيقاف المساعدات")
-                }
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    Button {
+                        session.suspendAssistance()
+                        if let image = session.calibrationFrames.image() {
+                            calibrationShot = CalibrationShot(image: image)
+                        } else {
+                            calibrationError = true
+                            session.resumeAssistance()
+                        }
+                    } label: { Label("معايرة", systemImage: "eyedropper") }
+                    .padding(10).background(.black.opacity(0.7), in: Capsule())
+                    Button { showMetrics.toggle() } label: {
+                        Image(systemName: "chart.bar.xaxis").padding(10)
+                    }.background(.black.opacity(0.7), in: Capsule())
+                    .accessibilityLabel("إظهار أو إخفاء لوحة الأداء")
+                    Spacer(minLength: 0)
+                    Text(assistance.armed ? "المساعدة مفعّلة" : "المساعدة متوقفة")
+                        .font(.caption2).padding(8).background(.black.opacity(0.7), in: Capsule())
+                    Button("إيقاف") { session.stopAssistanceNow() }
+                        .padding(12).background(.red.opacity(0.9), in: Capsule())
+                        .accessibilityLabel("إيقاف جميع المساعدات فوراً")
+                }.font(.caption.bold()).foregroundStyle(.white)
+                if showMetrics { performancePanel }
                 Spacer()
             }.padding().zIndex(10)
 
@@ -118,6 +136,14 @@ struct RemotePlayView: View {
                 .zIndex(10)
             }
         }
+        .sheet(item: $calibrationShot, onDismiss: {
+            if scenePhase == .active { session.resumeAssistance() }
+        }) { shot in
+            StreamCalibrationView(shot: shot).preferredColorScheme(.dark)
+        }
+        .alert("لا توجد لقطة حديثة", isPresented: $calibrationError) {
+            Button("حسناً", role: .cancel) {}
+        } message: { Text("انتظر ظهور بث PS5 ثم افتح المعايرة مجدداً.") }
         .persistentSystemOverlays(.hidden)
         .statusBarHidden()
         .interactiveDismissDisabled()
@@ -163,7 +189,7 @@ struct RemotePlayView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 AIFrameAnalyzer.shared.setPaused(false)
-                session.resumeAssistance()
+                if calibrationShot == nil { session.resumeAssistance() }
                 UIApplication.shared.isIdleTimerDisabled = true
                 if wasBackgrounded {
                     wasBackgrounded = false
@@ -177,6 +203,21 @@ struct RemotePlayView: View {
                 wasBackgrounded = true
             }
         }
+    }
+
+
+    private var performancePanel: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(String(format: "الإطارات المعروضة: %.0f FPS", session.measuredFPS))
+            Text(session.connectionRTT.map { String(format: "RTT عند الاتصال: %.1f ms", $0) } ?? "RTT عند الاتصال: غير متاح")
+            Text(session.packetLoss.map { String(format: "فقد الحزم (نافذة القياس): %.2f%%", $0) } ?? "فقد الحزم: لا توجد عينة")
+            Text("RTT ليس تأخير الزر إلى الصورة").foregroundStyle(.gray)
+            Text(aiAnalysis.enabled ? "تحليل الصورة: مفعّل" : "تحليل الصورة: متوقف")
+        }
+        .font(.system(size: 11, weight: .medium)).monospacedDigit()
+        .foregroundStyle(.white).padding(10)
+        .background(.black.opacity(0.75), in: RoundedRectangle(cornerRadius: 12))
+        .allowsHitTesting(false)
     }
 
     private var loginPINBinding: Binding<Bool> {
