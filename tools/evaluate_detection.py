@@ -19,7 +19,7 @@ def iou(a, b):
     iw = max(0.0, min(ax + aw, bx + bw) - max(ax, bx))
     ih = max(0.0, min(ay + ah, by + bh) - max(ay, by))
     union = aw * ah + bw * bh - iw * ih
-    return iw * ih / union if union > 0 else 0.0
+    return min(1.0, max(0.0, iw * ih / union)) if union > 0 else 0.0
 
 
 def valid_box(box):
