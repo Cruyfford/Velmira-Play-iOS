@@ -64,6 +64,7 @@ typedef struct TPPlayRegisteredHost {
 	/* Diagnostics only: never include the account ID, PIN or registration keys. */
 	uint32_t application_reason; /* 0 = no application reason reported */
 	uint32_t failure_stage;     /* 0 unspecified, 1 search, 2 connect, 3 request, 4 response */
+	uint32_t http_status;       /* 0 = no HTTP status reported */
 } TPPlayRegisteredHost;
 
 typedef void (*TPPlayRegistrationCallback)(TPPlayRegistrationEvent event, const TPPlayRegisteredHost *host, void *context);
