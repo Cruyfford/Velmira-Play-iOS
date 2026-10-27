@@ -544,7 +544,7 @@ private enum NameColorSampler {
     /// Pick a frequent bright/saturated foreground color inside the OCR text box.
     /// If the name is white/grey, return nil rather than falsely selecting a hue.
     static func suggestedHEX(in image: CGImage, region: CGRect) -> String? {
-        let size = CGSize(width: image.width, height: image.height)
+        let size = CGSize(width: CGFloat(image.width), height: CGFloat(image.height))
         let box = CGRect(x: region.minX * size.width,
                          y: (1 - region.maxY) * size.height,
                          width: region.width * size.width,
@@ -565,7 +565,7 @@ private enum NameColorSampler {
                 return false
             }
             ctx.interpolationQuality = .medium
-            ctx.draw(cropped, in: CGRect(x: 0, y: 0, width: columns, height: rows))
+            ctx.draw(cropped, in: CGRect(x: 0, y: 0, width: CGFloat(columns), height: CGFloat(rows)))
             return true
         }
         guard rendered else { return nil }
