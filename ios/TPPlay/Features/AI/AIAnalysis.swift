@@ -256,12 +256,12 @@ struct AIAnalysisSettings: View {
     }
 }
 
-enum RosterSide: String, CaseIterable, Identifiable {
+enum RosterSide: String, CaseIterable, Identifiable, Codable {
     case unknown = "غير مصنف", friendly = "فريقي", opponent = "الخصوم"
     var id: String { rawValue }
 }
-struct RosterName: Identifiable {
-    let id = UUID()
+struct RosterName: Identifiable, Codable {
+    var id = UUID()
     var name: String
     var side: RosterSide = .unknown
     /// Saved visual identifier; it does not verify which team the player belongs to.
@@ -270,11 +270,27 @@ struct RosterName: Identifiable {
 @MainActor
 final class MatchRoster: ObservableObject {
     static let shared = MatchRoster()
-    @Published var names: [RosterName] = []
+    @Published var names: [RosterName] = [] {
+        didSet { saveRoster() }
+    }
     @Published var reading = false
     @Published var message = "ابدأ مباراة جديدة ثم أضف صورة لوحة النتائج."
     @Published var matchNumber = 1
     private var generation = UUID()
+    private let storageKey = "velmira.match.roster.v1"
+
+    init() {
+        if let saved = UserDefaults.standard.data(forKey: storageKey),
+           let restored = try? JSONDecoder().decode([RosterName].self, from: saved) {
+            names = restored
+        }
+    }
+
+    private func saveRoster() {
+        if let data = try? JSONEncoder().encode(names) {
+            UserDefaults.standard.set(data, forKey: storageKey)
+        }
+    }
 
     /// Explicit user confirmation is required before an OCR name becomes an opponent.
     func saveSelectedOpponent(name: String, colorHEX: String) {
