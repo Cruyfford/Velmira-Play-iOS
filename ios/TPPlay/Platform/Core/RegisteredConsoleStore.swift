@@ -204,7 +204,29 @@ final class ConsoleRegistration: ObservableObject {
                 state = .failed("Registered, but secure storage failed: \(error.localizedDescription)")
             }
         default:
-            state = .failed("The console rejected registration. Check the PIN and account ID.")
+            let reason = payload?.applicationReason ?? 0
+            let status = payload?.httpStatus ?? 0
+            let stage = payload?.failureStage ?? 0
+            if reason != 0 {
+                state = .failed("رفض PS5 عملية الاقتران (رمز الجهاز: " +
+                                String(format: "0x%08X", reason) +
+                                "). تأكد من استخدام حساب PSN نفسه والرمز الحالي الظاهر على الجهاز.")
+            } else if status != 0 {
+                state = .failed("رفض الجهاز طلب التسجيل (HTTP \(status)). افتح إعدادات Remote Play وأنشئ رمز ربط جديدًا.")
+            } else {
+                switch stage {
+                case 1:
+                    state = .failed("لم يتم العثور على PS5 لإكمال الاقتران. تأكد من اتصال الهاتف والجهاز بنفس الشبكة.")
+                case 2:
+                    state = .failed("تعذر الاتصال بمنفذ التسجيل على PS5. تأكد من الشبكة وفتح شاشة إقران الجهاز.")
+                case 3:
+                    state = .failed("فشل إرسال طلب التسجيل أو استقبال الرد. تحقق من رمز PIN والشبكة وحاول مجددًا.")
+                case 4:
+                    state = .failed("فشل رد PS5 على طلب التسجيل. أنشئ رمز PIN جديدًا وتأكد من مطابقة حساب PSN.")
+                default:
+                    state = .failed("تعذر إكمال الاقتران. راجع رمز PIN وحساب PSN واتصال الشبكة.")
+                }
+            }
         }
     }
 }
@@ -217,6 +239,9 @@ private struct RegistrationPayload: Sendable {
     let keyType: UInt32
     let key: Data
     let consolePIN: UInt32
+    let applicationReason: UInt32
+    let failureStage: UInt32
+    let httpStatus: UInt32
 }
 
 @MainActor private var activeStores: [ObjectIdentifier: RegisteredConsoleStore] = [:]
@@ -236,7 +261,10 @@ private let tpPlayRegistrationCallback: @convention(c) (
             registrationKey: data(value.registration_key, count: value.registration_key_size),
             keyType: value.key_type,
             key: data(value.key, count: value.key_size),
-            consolePIN: value.console_pin
+            consolePIN: value.console_pin,
+            applicationReason: value.application_reason,
+            failureStage: value.failure_stage,
+            httpStatus: value.http_status
         )
     }
     let registration = Unmanaged<ConsoleRegistration>.fromOpaque(context).takeUnretainedValue()
