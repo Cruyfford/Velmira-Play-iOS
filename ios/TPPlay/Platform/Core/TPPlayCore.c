@@ -29,6 +29,9 @@ struct TPPlayRegistration {
 	ChiakiLog log;
 	TPPlayRegistrationCallback callback;
 	void *context;
+	atomic_uint application_reason;
+	atomic_uint failure_stage;
+	atomic_uint http_status;
 };
 
 struct TPPlaySession {
@@ -91,6 +94,36 @@ static void tp_play_discovery_callback(ChiakiDiscoveryHost *hosts, size_t count,
 	free(result);
 }
 
+/* Registration logs may contain confidential material. Inspect only known
+ * status messages; never forward account IDs, registration keys or PINs. */
+static void tp_play_registration_log_callback(ChiakiLogLevel level, const char *message, void *context)
+{
+	TPPlayRegistration *registration = context;
+	if(!registration || !message)
+		return;
+	unsigned int value = 0;
+	if(level == CHIAKI_LOG_ERROR && sscanf(message, "Reported Application Reason: %x", &value) == 1)
+		atomic_store(&registration->application_reason, value);
+	if(level == CHIAKI_LOG_ERROR && sscanf(message, "Regist received HTTP code %u", &value) == 1)
+	{
+		atomic_store(&registration->http_status, value);
+		atomic_store(&registration->failure_stage, 4);
+	}
+	if(strstr(message, "Regist starting search"))
+		atomic_store(&registration->failure_stage, 1);
+	else if(strstr(message, "Regist connected to") ||
+	        strstr(message, "Regist eventually failed to connect"))
+		atomic_store(&registration->failure_stage, 2);
+	else if(strstr(message, "Regist waiting for response") ||
+	        strstr(message, "Regist failed to send") ||
+	        strstr(message, "Regist failed to format"))
+		atomic_store(&registration->failure_stage, 3);
+	else if(strstr(message, "Regist response HTTP") ||
+	        strstr(message, "Regist response does not") ||
+	        strstr(message, "Regist successfully received response"))
+		atomic_store(&registration->failure_stage, 4);
+}
+
 static void tp_play_registration_callback(ChiakiRegistEvent *event, void *context)
 {
 	TPPlayRegistration *registration = context;
@@ -113,6 +146,11 @@ static void tp_play_registration_callback(ChiakiRegistEvent *event, void *contex
 		result.console_pin = source->console_pin;
 		result_pointer = &result;
 	}
+	/* Always return numeric diagnostic metadata, including failed registrations. */
+	result.application_reason = atomic_load(&registration->application_reason);
+	result.failure_stage = atomic_load(&registration->failure_stage);
+	result.http_status = atomic_load(&registration->http_status);
+	result_pointer = &result;
 
 	registration->callback((TPPlayRegistrationEvent)event->type, result_pointer, registration->context);
 }
@@ -387,7 +425,11 @@ TPPlayRegistration *tp_play_registration_create(
 
 	registration->callback = callback;
 	registration->context = context;
-	chiaki_log_init(&registration->log, CHIAKI_LOG_ALL, chiaki_log_cb_print, NULL);
+	atomic_init(&registration->application_reason, 0);
+	atomic_init(&registration->failure_stage, 0);
+	atomic_init(&registration->http_status, 0);
+	chiaki_log_init(&registration->log, CHIAKI_LOG_ERROR | CHIAKI_LOG_INFO,
+	                tp_play_registration_log_callback, registration);
 
 	ChiakiRegistInfo info;
 	memset(&info, 0, sizeof(info));
