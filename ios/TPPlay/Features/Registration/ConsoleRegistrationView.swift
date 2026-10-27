@@ -20,7 +20,10 @@ struct ConsoleRegistrationView: View {
     }
 
     private var validPIN: UInt32? {
-        guard pin.count == 8, pin.allSatisfy(\.isNumber) else { return nil }
+        // The registration protocol expects eight ASCII decimal digits only.
+        // Unicode numeric glyphs may look correct but fail protocol parsing.
+        guard pin.utf8.count == 8,
+              pin.utf8.allSatisfy({ (48...57).contains($0) }) else { return nil }
         return UInt32(pin)
     }
 
@@ -49,7 +52,16 @@ struct ConsoleRegistrationView: View {
                     fieldBlock("REMOTE PLAY // 8-DIGIT PIN") {
                         SecureField("00000000", text: $pin)
                             .keyboardType(.numberPad)
+                            .textContentType(.oneTimeCode)
                             .textFieldStyle(AcidFieldStyle())
+                        Text("على PS5: الإعدادات ← النظام ← اللعب عن بُعد ← إقران الجهاز. اترك شاشة الرمز مفتوحة واكتب الأرقام الثمانية الحالية.")
+                            .font(.caption2)
+                            .foregroundStyle(TPPlayTheme.secondaryText)
+                        if !pin.isEmpty && validPIN == nil {
+                            Text("يجب إدخال ثمانية أرقام إنجليزية من 0 إلى 9.")
+                                .font(.caption2)
+                                .foregroundStyle(TPPlayTheme.danger)
+                        }
                     }
 
                     VStack(alignment: .leading, spacing: 10) {
@@ -65,7 +77,11 @@ struct ConsoleRegistrationView: View {
                             .textFieldStyle(AcidFieldStyle())
                         Button("GET ACCOUNT ID") {
                             Task {
-                                if let value = await psnAccount.resolve(from: redirectURL) { accountID = value }
+                                if let value = await psnAccount.resolve(from: redirectURL) {
+                                    accountID = value
+                                    // Remove the one-time OAuth authorization code from the UI.
+                                    redirectURL = ""
+                                }
                             }
                         }
                         .frame(maxWidth: .infinity, minHeight: 44)
