@@ -7,7 +7,10 @@ import UIKit
 @MainActor
 final class AssistanceState: ObservableObject {
     static let shared = AssistanceState()
-    @Published var armed = false
+    @Published var armed = false {
+        didSet { if armed { lastStopReason = nil } }
+    }
+    @Published private(set) var lastStopReason: String?
     @Published var configuration: AssistanceConfiguration { didSet { save() } }
     @Published private(set) var target: CGPoint?
     @Published private(set) var status = "متوقف"
@@ -26,7 +29,12 @@ final class AssistanceState: ObservableObject {
         if self.target != target { self.target = target }
         if self.status != status { self.status = status }
     }
-    func emergencyStop() { armed = false; target = nil; status = "متوقف" }
+    func emergencyStop(reason: String = "تم إيقاف المساعدة") {
+        armed = false
+        lastStopReason = reason
+        target = nil
+        status = "متوقف"
+    }
 }
 
 struct AssistanceSettings: View {
@@ -41,6 +49,10 @@ struct AssistanceSettings: View {
                     Text("بعد التفعيل اترك L2 وR2 أولًا، ثم اضغط L2. حرّك العصا بقوة لاستعادة أولوية التحكم اليدوي.")
                     Button("إيقاف جميع المساعدات", role: .destructive) { model.emergencyStop() }
                     Text(model.status)
+                    if !model.armed, let reason = model.lastStopReason {
+                        Text("سبب الإيقاف: \(reason)")
+                            .font(.footnote).foregroundStyle(.orange)
+                    }
                     Text("تعديلات مصدر لم تُختبر على PS5 بعد. كشف الأشخاص لا يميز العدو من الصديق. وضع اللون يعتمد على لون علامة الخصم الذي تختاره.").font(.footnote)
                 }
                 VelmiraSection("التتبّع") {
@@ -468,7 +480,8 @@ struct StreamCalibrationView: View {
             AssistanceState.shared.configuration.colorOffsetX = dx
             AssistanceState.shared.configuration.colorOffsetY = dy
         }
-        AssistanceState.shared.emergencyStop()
+        // The video session is suspended while this sheet is open.
+        // Keep the user's choice; the engine will require L2/R2 release on resume.
         AIAnalysisState.shared.colorHue = hue
         AIAnalysisState.shared.colorMode = true
         dismiss()
