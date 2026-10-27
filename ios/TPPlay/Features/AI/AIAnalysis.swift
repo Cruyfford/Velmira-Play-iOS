@@ -22,6 +22,8 @@ struct HumanAnalysis: Sendable {
 final class AIAnalysisState: ObservableObject {
     static let shared = AIAnalysisState()
     @Published var colorMode = false { didSet { configure() } }
+    @Published var precisionMode = true { didSet { configure() } }
+    private var persistence = StableDetectionFilter()
     @Published var colorHue = 0.0 { didSet { configure() } }
     @Published var colorTolerance = 0.045 { didSet { configure() } }
     @Published var enabled = false { didSet { configure() } }
@@ -32,9 +34,29 @@ final class AIAnalysisState: ObservableObject {
         AIFrameAnalyzer.shared.configure(enabled: enabled, threshold: Float(threshold), rate: rate, colorMode: colorMode,
             color: ColorTrackingConfiguration(hue: colorHue, tolerance: colorTolerance))
         result = nil
+        persistence.reset()
     }
-    func accept(_ value: HumanAnalysis) { result = value }
-    func clear() { result = nil; AIFrameAnalyzer.shared.invalidate() }
+    func accept(_ value: HumanAnalysis) {
+        guard precisionMode else { result = value; return }
+        if value.error != nil {
+            persistence.reset()
+            result = value
+            return
+        }
+        let confirmations = persistence.update(value.detections.map(\.box), at: value.capturedAt)
+        let confirmed = confirmations.map { match -> HumanDetection in
+            let item = value.detections[match.index]
+            return HumanDetection(id: match.id, box: item.box, confidence: item.confidence)
+        }
+        result = HumanAnalysis(detections: confirmed, imageSize: value.imageSize,
+                               capturedAt: value.capturedAt,
+                               milliseconds: value.milliseconds, error: value.error)
+    }
+    func clear() {
+        result = nil
+        persistence.reset()
+        AIFrameAnalyzer.shared.invalidate()
+    }
 }
 private final class RetainedVideoFrame: @unchecked Sendable {
     let buffer: CVPixelBuffer
@@ -89,7 +111,7 @@ final class AIFrameAnalyzer: @unchecked Sendable {
                 let detections: [HumanDetection]
                 if useColor {
                     detections = try ColorTargetDetector.detect(frame.buffer, configuration: colorConfiguration).map {
-                        HumanDetection(id: UUID(), box: $0, confidence: 1)
+                        HumanDetection(id: UUID(), box: $0, confidence: 0) // Matching a hue is not a 100% model score.
                     }
                 } else {
                     let request = VNDetectHumanRectanglesRequest()
@@ -170,6 +192,13 @@ struct AIAnalysisSettings: View {
                 VelmiraSection("الذكاء الاصطناعي — معاينة البث") {
                     Toggle("تشغيل تحليل الصورة", isOn: $model.enabled)
                     Toggle("تتبّع لون العلامة بدل كشف الأشخاص", isOn: $model.colorMode)
+                    Toggle("تقليل الأخطاء — تأكيد 3 إطارات", isOn: $model.precisionMode)
+                    if model.precisionMode {
+                        Text("تظهر العلامة فقط بعد تأكيد وجودها في 3 صور متتالية. قد يؤدي ذلك إلى تجاهل الأهداف السريعة.")
+                            .font(.footnote).foregroundStyle(.orange)
+                        Text("التأكيد لا يثبت أن الشخصية من فريق الخصم. استخدم لون العلامة المميز وراجع النتائج.")
+                            .font(.footnote)
+                    }
                     if model.colorMode {
                         HStack {
                             Button("أحمر") { model.colorHue = 0 }
@@ -212,6 +241,7 @@ struct AIAnalysisSettings: View {
                 }
                 VelmiraSection("حدود الكشف") {
                     Text("Apple Vision نموذج عام، غير مدرَّب هنا على Call of Duty. قد يفوّت الشخصيات أو يكتشف مناطق خاطئة، ولا يميز الخصم من الصديق أو يؤكد موت الشخصية. درجة الثقة ليست ضمانًا.")
+                    Text("دقة 99٪ هدف للاختبار ببيانات حقيقية، وليست نتيجة مثبتة. لتقييم الدقة نحتاج قياس الاكتشافات الصحيحة والمفقودة والخاطئة.")
                     Text("نسخة تطوير: الأداء والاتصال بحاجة لتجربة على iPhone 17 Pro وPS5.")
                 }
             }
