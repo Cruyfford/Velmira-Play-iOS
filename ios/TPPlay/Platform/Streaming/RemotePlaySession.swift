@@ -239,7 +239,7 @@ final class RemotePlaySession: ObservableObject {
             return
         }
 
-        suspendAssistance()
+        suspendAssistance(reason: "تم إنهاء جلسة Remote Play")
         isStopped = true
         calibrationFrames.clear()
         measuredFPS = 0; packetLoss = nil; connectionRTT = nil
@@ -590,7 +590,7 @@ final class RemotePlaySession: ObservableObject {
         }
         guard gameController.extendedGamepad != nil else { return }
         assistanceEngine.reset()
-        AssistanceState.shared.emergencyStop()
+        AssistanceState.shared.emergencyStop(reason: "انفصلت يد التحكم")
         controller = TPPlayControllerState()
         sendController()
     }
@@ -620,10 +620,17 @@ final class RemotePlaySession: ObservableObject {
         }
     }
 
-    func suspendAssistance() {
+    /// Calibration may temporarily suspend output without discarding the user's
+    /// armed setting. Unsafe session interruptions must still disarm.
+    func suspendAssistance(preserveActivation: Bool = false,
+                           reason: String = "توقف اتصال Remote Play") {
         inputSuspended = true
         assistanceEngine.reset()
-        AssistanceState.shared.emergencyStop()
+        if preserveActivation {
+            AssistanceState.shared.report(target: nil, status: "معلّقة مؤقتًا للمعايرة")
+        } else {
+            AssistanceState.shared.emergencyStop(reason: reason)
+        }
         controller = TPPlayControllerState()
         if let session {
             var neutral = TPPlayControllerState()
@@ -632,7 +639,7 @@ final class RemotePlaySession: ObservableObject {
     }
 
     func stopAssistanceNow() {
-        AssistanceState.shared.emergencyStop()
+        AssistanceState.shared.emergencyStop(reason: "ضغطت زر الإيقاف")
         assistanceEngine.reset()
         sendController()
     }
@@ -640,6 +647,9 @@ final class RemotePlaySession: ObservableObject {
     func resumeAssistance() {
         inputSuspended = false
         assistanceEngine.reset()
+        if AssistanceState.shared.armed {
+            AssistanceState.shared.report(target: nil, status: "مفعّلة — اترك L2 وR2 ثم اضغط L2")
+        }
     }
 
     private func sendController() {
@@ -674,7 +684,7 @@ final class RemotePlaySession: ObservableObject {
             markConnected()
         case 1: state = .loginPINRequired(incorrect: value != 0)
         case 9:
-            suspendAssistance()
+            suspendAssistance(reason: "انقطع اتصال Remote Play")
             assistanceTask?.cancel()
             assistanceTask = nil
             streamHealthTask?.cancel()
