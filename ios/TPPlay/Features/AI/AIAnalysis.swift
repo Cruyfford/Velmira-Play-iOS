@@ -384,37 +384,8 @@ struct MatchRosterView: View {
                         }
                         ForEach($roster.names) { $entry in
                             if entry.side == side {
-                                VStack(alignment: .leading, spacing: 10) {
-                                    TextField("اسم اللاعب", text: $entry.name)
-                                        .textInputAutocapitalization(.never).autocorrectionDisabled()
-                                        .textFieldStyle(AcidFieldStyle())
-                                        .environment(\.layoutDirection, .leftToRight)
-                                    if let hex = entry.nameColorHEX {
-                                        HStack(spacing: 8) {
-                                            Circle().fill(Color(uiColor: UIColor(hexRGB: hex) ?? .gray))
-                                                .frame(width: 13, height: 13)
-                                            Text("لون الاسم: \(hex)")
-                                                .font(.caption.monospaced())
-                                            Spacer()
-                                            Button("استخدام اللون") {
-                                                if let hue = UIColor(hexRGB: hex)?.hueValue {
-                                                    AIAnalysisState.shared.colorHue = hue
-                                                    AIAnalysisState.shared.colorMode = true
-                                                }
-                                            }.font(.caption)
-                                        }
-                                    }
-                                    HStack {
-                                        Menu {
-                                            ForEach(RosterSide.allCases) { choice in
-                                                Button(choice.rawValue) { entry.side = choice }
-                                            }
-                                        } label: { Label(entry.side.rawValue, systemImage: "person.2") }
-                                        Spacer()
-                                        Button(role: .destructive) { roster.names.removeAll { $0.id == entry.id } } label: {
-                                            Image(systemName: "trash")
-                                        }.accessibilityLabel("حذف الاسم")
-                                    }
+                                RosterEntryEditor(entry: $entry) {
+                                    roster.names.removeAll { $0.id == entry.id }
                                 }
                             }
                         }
@@ -446,6 +417,57 @@ struct MatchRosterView: View {
                 } catch { roster.message = "تعذر تحميل الصورة: " + error.localizedDescription }
                 photo = nil
             }
+        }
+    }
+}
+
+
+/// Keep the name/color editor small to avoid complex SwiftUI type-checking in the roster.
+private struct RosterEntryEditor: View {
+    @Binding var entry: RosterName
+    let onDelete: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            TextField("اسم اللاعب", text: $entry.name)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .textFieldStyle(AcidFieldStyle())
+                .environment(\.layoutDirection, .leftToRight)
+            if let hex = entry.nameColorHEX {
+                colorRow(hex)
+            }
+            HStack {
+                Menu {
+                    ForEach(RosterSide.allCases) { choice in
+                        Button(choice.rawValue) { entry.side = choice }
+                    }
+                } label: {
+                    Label(entry.side.rawValue, systemImage: "person.2")
+                }
+                Spacer()
+                Button(role: .destructive, action: onDelete) {
+                    Image(systemName: "trash")
+                }.accessibilityLabel("حذف الاسم")
+            }
+        }
+    }
+
+    private func colorRow(_ hex: String) -> some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(Color(uiColor: UIColor(hexRGB: hex) ?? .gray))
+                .frame(width: 13, height: 13)
+            Text("لون الاسم: \(hex)")
+                .font(.caption)
+                .monospaced()
+            Spacer()
+            Button("استخدام اللون") {
+                guard let hue = UIColor(hexRGB: hex)?.hueValue else { return }
+                AIAnalysisState.shared.colorHue = hue
+                AIAnalysisState.shared.colorMode = true
+            }
+            .font(.caption)
         }
     }
 }
