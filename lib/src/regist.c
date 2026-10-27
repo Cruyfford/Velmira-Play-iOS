@@ -101,7 +101,7 @@ static void regist_event_simple(ChiakiRegist *regist, ChiakiRegistEventType type
 }
 
 static const char *const request_head_fmt =
-	"POST %s HTTP/1.1\r\n HTTP/1.1\r\n"
+	"POST %s HTTP/1.1\r\n"
 	"HOST: %s\r\n"
 	"User-Agent: remoteplay Windows\r\n"
 	"Connection: close\r\n"
@@ -146,7 +146,7 @@ static int request_header_format(char *buf, size_t buf_size, size_t payload_size
 {
 	int cur = snprintf(buf, buf_size, request_head_fmt, request_path(target),
 			regist_local_addr, (unsigned long long)payload_size);
-	if(cur < 0 || cur >= payload_size)
+	if(cur < 0 || (size_t)cur >= buf_size)
 		return -1;
 	if(target >= CHIAKI_TARGET_PS4_9)
 	{
