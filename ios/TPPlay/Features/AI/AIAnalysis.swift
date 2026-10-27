@@ -2,6 +2,7 @@ import SwiftUI
 import Vision
 import CoreVideo
 import ImageIO
+import PhotosUI
 
 struct HumanDetection: Identifiable, Sendable {
     let id: UUID
@@ -162,6 +163,10 @@ struct AIAnalysisSettings: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 16) {
+                NavigationLink { MatchRosterView() } label: {
+                    Label("قائمة فريقي والخصوم", systemImage: "person.2.fill")
+                        .frame(maxWidth: .infinity, minHeight: 54)
+                }.buttonStyle(AcidButtonStyle(active: true))
                 VelmiraSection("الذكاء الاصطناعي — معاينة البث") {
                     Toggle("تشغيل تحليل الصورة", isOn: $model.enabled)
                     Toggle("تتبّع لون العلامة بدل كشف الأشخاص", isOn: $model.colorMode)
@@ -217,6 +222,144 @@ struct AIAnalysisSettings: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(TPPlayTheme.canvas, for: .navigationBar)
             .environment(\.layoutDirection, .rightToLeft)
+        }
+    }
+}
+
+enum RosterSide: String, CaseIterable, Identifiable {
+    case unknown = "غير مصنف", friendly = "فريقي", opponent = "الخصوم"
+    var id: String { rawValue }
+}
+struct RosterName: Identifiable {
+    let id = UUID()
+    var name: String
+    var side: RosterSide = .unknown
+}
+@MainActor
+final class MatchRoster: ObservableObject {
+    static let shared = MatchRoster()
+    @Published var names: [RosterName] = []
+    @Published var reading = false
+    @Published var message = "ابدأ مباراة جديدة ثم أضف صورة لوحة النتائج."
+    @Published var matchNumber = 1
+    private var generation = UUID()
+    func reset() {
+        generation = UUID()
+        names = []; reading = false; matchNumber += 1
+        message = "تم مسح بيانات المباراة السابقة."
+    }
+    func read(_ data: Data) async {
+        guard !reading else { return }
+        reading = true
+        let token = UUID()
+        generation = token
+        message = "جارٍ قراءة النصوص محلياً…"
+        let result = await Task.detached(priority: .userInitiated) { () -> Result<[String], Error> in
+            do {
+                let request = VNRecognizeTextRequest()
+                request.recognitionLevel = .accurate
+                request.usesLanguageCorrection = false
+                request.automaticallyDetectsLanguage = true
+                try VNImageRequestHandler(data: data, options: [:]).perform([request])
+                var seen = Set<String>()
+                let names = (request.results ?? []).compactMap { observation -> String? in
+                    guard let candidate = observation.topCandidates(1).first,
+                          candidate.confidence >= 0.55 else { return nil }
+                    let text = candidate.string.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard text.count >= 2, text.count <= 64,
+                          text.rangeOfCharacter(from: .letters) != nil,
+                          seen.insert(text.lowercased()).inserted else { return nil }
+                    return text
+                }
+                return .success(names)
+            } catch { return .failure(error) }
+        }.value
+        guard generation == token else { return }
+        reading = false
+        switch result {
+        case .success(let values):
+            let existing = Set(names.map { $0.name.lowercased() })
+            names.append(contentsOf: values.filter { !existing.contains($0.lowercased()) }.map { RosterName(name: $0) })
+            message = values.isEmpty ? "لم تُقرأ أسماء واضحة. استخدم صورة أوضح." : "راجع النصوص: قد تتضمن عناوين وإحصاءات. صحّح الأسماء وحدد الفريق لكل اسم."
+        case .failure(let error):
+            message = "تعذرت القراءة: " + error.localizedDescription
+        }
+    }
+}
+struct MatchRosterView: View {
+    @ObservedObject private var roster = MatchRoster.shared
+    @State private var photo: PhotosPickerItem?
+    @State private var showReset = false
+    @State private var newName = ""
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 16) {
+                VelmiraSection("قائمة المباراة \(roster.matchNumber)") {
+                    Text("قراءة أسماء لوحة النتائج بالذكاء الاصطناعي على جهازك.")
+                    Text("التصنيف التلقائي للفريقين واكتشاف بداية المباراة لم يُفعّلا بعد. هذه القائمة لا تتحكم بالتصويب.")
+                        .font(.footnote).foregroundStyle(.orange)
+                    PhotosPicker(selection: $photo, matching: .images) {
+                        Label("قراءة صورة لوحة النتائج", systemImage: "text.viewfinder")
+                            .frame(maxWidth: .infinity, minHeight: 48)
+                    }.buttonStyle(AcidButtonStyle(active: true)).disabled(roster.reading)
+                    if roster.reading { ProgressView() }
+                    Text(roster.message).font(.footnote)
+                    Button("مباراة جديدة — مسح القائمتين", role: .destructive) { showReset = true }
+                }
+                ForEach(RosterSide.allCases) { side in
+                    VelmiraSection("\(side.rawValue) • \(roster.names.filter { $0.side == side }.count)") {
+                        if !roster.names.contains(where: { $0.side == side }) {
+                            Text("لا توجد أسماء").font(.footnote)
+                        }
+                        ForEach($roster.names) { $entry in
+                            if entry.side == side {
+                                VStack(alignment: .leading, spacing: 10) {
+                                    TextField("اسم اللاعب", text: $entry.name)
+                                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                                        .textFieldStyle(AcidFieldStyle())
+                                        .environment(\.layoutDirection, .leftToRight)
+                                    HStack {
+                                        Menu {
+                                            ForEach(RosterSide.allCases) { choice in
+                                                Button(choice.rawValue) { entry.side = choice }
+                                            }
+                                        } label: { Label(entry.side.rawValue, systemImage: "person.2") }
+                                        Spacer()
+                                        Button(role: .destructive) { roster.names.removeAll { $0.id == entry.id } } label: {
+                                            Image(systemName: "trash")
+                                        }.accessibilityLabel("حذف الاسم")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                VelmiraSection("إضافة اسم يدوياً") {
+                    TextField("اسم اللاعب", text: $newName).textFieldStyle(AcidFieldStyle())
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    Button("إضافة للمراجعة") {
+                        let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !name.isEmpty { roster.names.append(RosterName(name: name)); newName = "" }
+                    }.disabled(newName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }.padding(20)
+        }
+        .background(TPPlayTheme.canvas)
+        .navigationTitle("الفريق والخصوم")
+        .navigationBarTitleDisplayMode(.inline)
+        .environment(\.layoutDirection, .rightToLeft)
+        .confirmationDialog("مسح جميع أسماء المباراة السابقة؟", isPresented: $showReset, titleVisibility: .visible) {
+            Button("بدء مباراة جديدة", role: .destructive) { roster.reset() }
+        }
+        .onChange(of: photo) { _, item in
+            guard let item else { return }
+            Task {
+                do {
+                    if let data = try await item.loadTransferable(type: Data.self) { await roster.read(data) }
+                    else { roster.message = "تعذر تحميل الصورة." }
+                } catch { roster.message = "تعذر تحميل الصورة: " + error.localizedDescription }
+                photo = nil
+            }
         }
     }
 }
