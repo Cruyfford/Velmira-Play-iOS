@@ -160,8 +160,9 @@ struct AIAnalysisSettings: View {
     @ObservedObject private var model = AIAnalysisState.shared
     var body: some View {
         NavigationStack {
-            Form {
-                Section("الذكاء الاصطناعي — معاينة البث") {
+            ScrollView {
+                VStack(spacing: 16) {
+                VelmiraSection("الذكاء الاصطناعي — معاينة البث") {
                     Toggle("تشغيل تحليل الصورة", isOn: $model.enabled)
                     Toggle("تتبّع لون العلامة بدل كشف الأشخاص", isOn: $model.colorMode)
                     if model.colorMode {
@@ -178,19 +179,19 @@ struct AIAnalysisSettings: View {
                     Text("ابدأ اتصال PS5 من قسم اللعب. تظهر الإطارات فوق الأشخاص المحتملين داخل البث، دون إرسال الصور إلى خادم.")
                     Text("التحليل وحده للمعاينة. فعّل الحركة والماكروز بشكل منفصل من قسم التحكم.").foregroundStyle(.cyan)
                 }
-                Section("الأداء") {
+                VelmiraSection("الأداء") {
                     Slider(value: $model.threshold, in: 0.2...0.95, step: 0.05) {
                         Text("عتبة الثقة")
                     }
                     Text("عتبة الثقة: \(Int(model.threshold * 100))٪")
-                    Picker("التحليلات المطلوبة في الثانية", selection: $model.rate) {
-                        Text("خفيف — 3").tag(3.0)
-                        Text("متوازن — 5").tag(5.0)
-                        Text("أعلى — 8").tag(8.0)
-                    }
+                    Picker("معدل التحليل", selection: $model.rate) {
+                        Text("3").tag(3.0)
+                        Text("5").tag(5.0)
+                        Text("8").tag(8.0)
+                    }.pickerStyle(.segmented)
                     Text("لا تعني هذه القيم معدل إطارات اللعبة. يُخفَّض التحليل تلقائيًا عند ارتفاع حرارة الجهاز.")
                 }
-                Section("حالة التحليل") {
+                VelmiraSection("حالة التحليل") {
                     TimelineView(.periodic(from: .now, by: 0.5)) { _ in
                         if let result = model.result {
                             if let error = result.error { Text(error).foregroundStyle(.red) }
@@ -204,12 +205,18 @@ struct AIAnalysisSettings: View {
                         } else { Text(model.enabled ? "بانتظار إطارات من بث PS5" : "التحليل متوقف") }
                     }
                 }
-                Section("حدود الكشف") {
+                VelmiraSection("حدود الكشف") {
                     Text("Apple Vision نموذج عام، غير مدرَّب هنا على Call of Duty. قد يفوّت الشخصيات أو يكتشف مناطق خاطئة، ولا يميز الخصم من الصديق أو يؤكد موت الشخصية. درجة الثقة ليست ضمانًا.")
                     Text("نسخة تطوير: الأداء والاتصال بحاجة لتجربة على iPhone 17 Pro وPS5.")
                 }
             }
-            .navigationTitle("ذكاء Velmira")
+                .padding(20)
+            }
+            .background(TPPlayTheme.canvas)
+            .navigationTitle("الذكاء الاصطناعي")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(TPPlayTheme.canvas, for: .navigationBar)
+            .environment(\.layoutDirection, .rightToLeft)
         }
     }
 }

@@ -30,15 +30,16 @@ struct AssistanceSettings: View {
     @ObservedObject private var vision = AIAnalysisState.shared
     var body: some View {
         NavigationStack {
-            Form {
-                Section("التحكم الفعلي — تجريبي") {
+            ScrollView {
+                VStack(spacing: 16) {
+                VelmiraSection("التحكم الفعلي — تجريبي") {
                     Toggle("تفعيل المساعدة عند L2", isOn: $model.armed)
                     Text("بعد التفعيل اترك L2 وR2 أولًا، ثم اضغط L2. حرّك العصا بقوة لاستعادة أولوية التحكم اليدوي.")
                     Button("إيقاف جميع المساعدات", role: .destructive) { model.emergencyStop() }
                     Text(model.status)
                     Text("تعديلات مصدر لم تُختبر على PS5 بعد. كشف الأشخاص لا يميز العدو من الصديق. وضع اللون يعتمد على لون علامة الخصم الذي تختاره.").font(.footnote)
                 }
-                Section("التتبّع") {
+                VelmiraSection("التتبّع") {
                     Toggle("تحريك التصويب نحو الهدف", isOn: $model.configuration.tracking)
                     if !vision.enabled {
                         Button("تشغيل تحليل الصورة") { vision.enabled = true }
@@ -52,7 +53,7 @@ struct AssistanceSettings: View {
                     valueSlider("مهلة فقد الهدف بالثواني", value: $model.configuration.lossDelay, range: 0.15...2)
                     Text("بدون الانتقال التلقائي: اترك L2 واضغطه مجددًا لاختيار هدف جديد. تُوقف الحركة عند تقادم الصورة؛ لا يستمر التصويب نحو موقع قديم.").font(.footnote)
                 }
-                Section("موضع التصويب داخل الجسم") {
+                VelmiraSection("موضع التصويب داخل الجسم") {
                     HStack {
                         Button("الرأس") { model.configuration.pointX = 0.5; model.configuration.pointY = 0.1 }
                         Button("البطن") { model.configuration.pointX = 0.5; model.configuration.pointY = 0.55 }
@@ -61,12 +62,12 @@ struct AssistanceSettings: View {
                     BodyPointPicker(x: $model.configuration.pointX, y: $model.configuration.pointY)
                     Text("اسحب الدائرة لأي موضع. الرسم توضيحي؛ تحديد الرأس تقديري داخل إطار الشخص وليس كشفًا تشريحيًا.").font(.footnote)
                 }
-                Section("إذا كان اللون فوق الرأس") {
+                VelmiraSection("إذا كان اللون فوق الرأس") {
                     valueSlider("الإزاحة الأفقية من الاسم", value: $model.configuration.colorOffsetX, range: -0.3...0.3)
                     valueSlider("الإزاحة أسفل الاسم", value: $model.configuration.colorOffsetY, range: -0.1...0.4)
                     Text("الإزاحة نسبة من حجم الصورة. تختلف حسب المسافة والتقريب؛ عايرها على البث. نقطة الاسم ونقطة التصويب مختلفتان.").font(.footnote)
                 }
-                Section("السنايبر — مرة لكل ضغطة L2") {
+                VelmiraSection("السنايبر — مرة لكل ضغطة L2") {
                     Toggle("Quick Scope: تصويب ثم R2", isOn: $model.configuration.quickScope)
                     valueSlider("التأخير قبل الطلقة", value: $model.configuration.scopeDelay, range: 0.05...2)
                     valueSlider("مدة ضغط R2", value: $model.configuration.shotDuration, range: 0.03...0.3)
@@ -74,20 +75,26 @@ struct AssistanceSettings: View {
                     valueSlider("تأخير تبديل السلاح", value: $model.configuration.switchDelay, range: 0.03...1)
                     Text("التبديل يضغط مثلث وفق ترتيب أزرار اللعبة الافتراضي. الاسم هنا يعني تسلسل أزرار فقط، ولا يضمن إخفاء صوت الطلقة. ترك L2 يلغي التسلسل. الماكرو لا ينتظر كشف هدف.").font(.footnote)
                 }
-                Section("تعويض الارتداد — L2 مع R2") {
+                VelmiraSection("تعويض الارتداد — L2 مع R2") {
                     Toggle("تعويض ثابت قابل للمعايرة", isOn: $model.configuration.recoil)
                     valueSlider("أفقي", value: $model.configuration.recoilX, range: -0.3...0.3)
                     valueSlider("رأسي", value: $model.configuration.recoilY, range: -0.3...0.3)
                     Text("ليس تثبيتًا مضمونًا لكل سلاح. اضبطه لكل حساسية وسلاح داخل ساحة تدريب.").font(.footnote)
                 }
-                Section {
+                VelmiraSection {
                     Button("استعادة القيم الافتراضية", role: .destructive) {
                         model.emergencyStop(); model.configuration = AssistanceConfiguration()
                     }
                     Text("تُحفظ الإعدادات محليًا، لكن التشغيل يبدأ متوقفًا كل مرة.")
                 }
             }
-            .navigationTitle("التتبّع والماكروز")
+                .padding(20)
+            }
+            .background(TPPlayTheme.canvas)
+            .navigationTitle("التحكم والمساعدة")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(TPPlayTheme.canvas, for: .navigationBar)
+            .environment(\.layoutDirection, .rightToLeft)
         }
     }
     private func valueSlider(_ title: String, value: Binding<Double>, range: ClosedRange<Double>) -> some View {

@@ -31,11 +31,33 @@ struct ConsoleLibraryView: View {
 
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 20) {
+                        HStack(spacing: 8) {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text("جهازك. ألعابك. أينما كنت.").font(.system(size: 22, weight: .bold))
+                                Text("اتصل بجهاز PlayStation وابدأ اللعب من الآيفون.")
+                                    .font(.system(size: 14)).foregroundStyle(TPPlayTheme.secondaryText)
+                            }
+                            VelmiraConsoleArtwork()
+                        }
+                        .frame(maxWidth: .infinity).padding(16)
+                        .background(LinearGradient(colors: [Color.blue.opacity(0.32), TPPlayTheme.surface], startPoint: .topLeading, endPoint: .bottomTrailing), in: RoundedRectangle(cornerRadius: 24))
+                        .overlay { RoundedRectangle(cornerRadius: 24).stroke(TPPlayTheme.accent.opacity(0.35), lineWidth: 1) }
+                        Button { showingManualConsole = true } label: {
+                            HStack(spacing: 14) {
+                                Image(systemName: "plus.circle").font(.system(size: 30))
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text("إضافة جهاز").font(.headline)
+                                    Text("ربط جهاز PS5 أو PS4 جديد").font(.caption)
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.forward")
+                            }.padding(18).frame(maxWidth: .infinity)
+                        }.buttonStyle(AcidButtonStyle())
                         if !registeredConsoles.consoles.isEmpty { consoleSection }
                         else { emptyConsoleState }
                         if let storageError = registeredConsoles.storageError {
                             Text("KEYCHAIN ERROR // \(storageError)")
-                                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                .font(.system(size: 10, weight: .bold, design: .default))
                                 .foregroundStyle(TPPlayTheme.danger)
                         }
                     }
@@ -76,7 +98,7 @@ struct ConsoleLibraryView: View {
             if let wakeError {
                 Color.black.opacity(0.76)
                     .ignoresSafeArea()
-                TPErrorDialog(title: "CONNECTION ERROR", message: wakeError) {
+                TPErrorDialog(title: "تعذر الاتصال", message: wakeError) {
                     self.wakeError = nil
                 }
                 .frame(maxWidth: 420)
@@ -112,13 +134,13 @@ struct ConsoleLibraryView: View {
         .fullScreenCover(item: $playRequest, onDismiss: {
             playRequest = nil
         }) { request in
-            RemotePlayView(session: request.session)
+            RemotePlayView(session: request.session).environment(\.layoutDirection, .leftToRight)
         }
         .confirmationDialog("REMOVE CONSOLE?", isPresented: Binding(
             get: { consoleToRemove != nil },
             set: { if !$0 { consoleToRemove = nil } }
         ), titleVisibility: .visible) {
-            Button("Remove console", role: .destructive) {
+            Button("إزالة الجهاز", role: .destructive) {
                 guard let consoleToRemove else { return }
                 registeredConsoles.remove(consoleToRemove)
                 self.consoleToRemove = nil
@@ -138,18 +160,18 @@ struct ConsoleLibraryView: View {
     }
 
     private var header: some View {
-        TPPageHeader("PLAY // CONSOLES") {
+        TPPageHeader("PS5") {
             HStack(spacing: 7) {
                 Rectangle()
                     .fill(discovery.errorMessage == nil ? TPPlayTheme.accent : TPPlayTheme.danger)
                     .frame(width: 6, height: 6)
-                Text("LOCAL")
+                Text("الشبكة")
             }
-            .font(.system(size: 10, weight: .bold, design: .monospaced))
+            .font(.system(size: 10, weight: .bold, design: .default))
             .tracking(0.8)
             .foregroundStyle(TPPlayTheme.primaryText)
             .frame(width: 82, height: 42)
-            .overlay { Rectangle().stroke(TPPlayTheme.violet, lineWidth: 1) }
+            .overlay { RoundedRectangle(cornerRadius: 18).stroke(TPPlayTheme.violet, lineWidth: 1) }
 
             Button { showingManualConsole = true } label: {
                 Image(systemName: "plus")
@@ -163,7 +185,7 @@ struct ConsoleLibraryView: View {
 
     private var consoleSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            sectionHeader("MY CONSOLES", detail: "\(registeredConsoles.consoles.count)")
+            sectionHeader("أجهزتي", detail: "\(registeredConsoles.consoles.count)")
             ForEach(registeredConsoles.consoles) { registered in
                 let nearby = discovery.console(matching: registered)
                 let remoteAvailable = remoteCredentials.canAttemptRemoteConnection(for: registered)
@@ -333,11 +355,11 @@ struct ConsoleLibraryView: View {
 
     private var emptyConsoleState: some View {
         VStack(spacing: 10) {
-            Text("NO LINKED CONSOLES")
-                .font(.system(size: 14, weight: .black, design: .monospaced))
+            Text("أضف جهازك للبدء")
+                .font(.system(size: 14, weight: .black, design: .default))
                 .foregroundStyle(TPPlayTheme.primaryText)
-            Text("TAP + TO LINK A PLAYSTATION.")
-                .font(.system(size: 9, weight: .medium, design: .monospaced))
+            Text("فعّل اللعب عن بُعد على PS5 ثم اضغط إضافة جهاز.")
+                .font(.system(size: 9, weight: .medium, design: .default))
                 .tracking(0.5)
                 .foregroundStyle(TPPlayTheme.secondaryText)
         }
@@ -345,16 +367,17 @@ struct ConsoleLibraryView: View {
         .padding(.horizontal, 20)
         .padding(.vertical, 26)
         .background(TPPlayTheme.surface)
-        .overlay { Rectangle().stroke(TPPlayTheme.border, lineWidth: 1) }
+        .clipShape(RoundedRectangle(cornerRadius: 18))
+        .overlay { RoundedRectangle(cornerRadius: 18).stroke(TPPlayTheme.border, lineWidth: 1) }
     }
 
     private func sectionHeader(_ title: String, detail: String) -> some View {
         HStack {
-            Text("// \(title)")
+            Text(title)
             Spacer()
             Text(detail)
         }
-        .font(.system(size: 9, weight: .bold, design: .monospaced))
+        .font(.system(size: 9, weight: .bold, design: .default))
         .tracking(1)
         .foregroundStyle(TPPlayTheme.accent)
     }
@@ -375,25 +398,25 @@ private struct RegisteredConsoleCard: View {
                 ConsoleGlyph(isPS5: console.isPS5)
                 VStack(alignment: .leading, spacing: 5) {
                     Text(console.nickname.uppercased())
-                        .font(.system(size: 16, weight: .black, design: .monospaced))
+                        .font(.system(size: 16, weight: .black, design: .default))
                         .foregroundStyle(TPPlayTheme.primaryText)
                         .lineLimit(1)
                     Text(statusText.uppercased())
-                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .font(.system(size: 9, weight: .bold, design: .default))
                         .foregroundStyle(remoteAvailable || nearby != nil ? TPPlayTheme.accent : TPPlayTheme.secondaryText)
                         .lineLimit(1)
                     Text(console.address)
-                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                        .font(.system(size: 9, weight: .medium, design: .default))
                         .foregroundStyle(TPPlayTheme.tertiaryText)
                 }
                 Spacer(minLength: 4)
                 Menu {
-                    Button("Remove console", systemImage: "trash", role: .destructive, action: onRemove)
+                    Button("إزالة الجهاز", systemImage: "trash", role: .destructive, action: onRemove)
                 } label: {
                     Image(systemName: "ellipsis")
                         .foregroundStyle(TPPlayTheme.primaryText)
                         .frame(width: 36, height: 36)
-                        .overlay { Rectangle().stroke(TPPlayTheme.border, lineWidth: 1) }
+                        .overlay { RoundedRectangle(cornerRadius: 18).stroke(TPPlayTheme.border, lineWidth: 1) }
                 }
             }
             .padding(14)
@@ -403,7 +426,7 @@ private struct RegisteredConsoleCard: View {
                     if isConnecting {
                         TPTerminalActivityGlyph(color: TPPlayTheme.onAccent)
                     }
-                    Text(isConnecting ? (connectionActivityText ?? "PREPARING CONSOLE") : (canStartSession ? "START SESSION" : "WAKE CONSOLE"))
+                    Text(isConnecting ? (connectionActivityText ?? "جارٍ تجهيز الاتصال") : (canStartSession ? "بدء اللعب" : "إيقاظ الجهاز"))
                     Spacer()
                     Text(">")
                 }
@@ -414,18 +437,19 @@ private struct RegisteredConsoleCard: View {
             .disabled(isConnecting)
         }
         .background(TPPlayTheme.surface)
-        .overlay { Rectangle().stroke(TPPlayTheme.violet, lineWidth: 1) }
+        .clipShape(RoundedRectangle(cornerRadius: 18))
+        .overlay { RoundedRectangle(cornerRadius: 18).stroke(TPPlayTheme.violet, lineWidth: 1) }
     }
 
     private var canStartSession: Bool {
         remoteAvailable || nearby?.state == .ready || nearby?.state == .unknown
     }
     private var statusText: String {
-        guard let nearby else { return remoteAvailable ? "PSN REMOTE // READY" : "SAVED // OFFLINE" }
+        guard let nearby else { return remoteAvailable ? "جاهز عبر الإنترنت" : "محفوظ • غير متصل" }
         switch nearby.state {
-        case .ready: return nearby.runningAppName ?? "READY"
-        case .standby: return "REST MODE"
-        case .unknown: return "AVAILABLE"
+        case .ready: return nearby.runningAppName ?? "جاهز للاتصال"
+        case .standby: return "وضع السكون"
+        case .unknown: return "متاح"
         }
     }
 }
@@ -506,12 +530,12 @@ private struct ConnectionRouteDialog: View {
                 Rectangle()
                     .fill(TPPlayTheme.accent)
                     .frame(width: 8, height: 8)
-                Text("// CONNECTION ROUTE")
-                    .font(.system(size: 11, weight: .black, design: .monospaced))
+                Text("طريقة الاتصال")
+                    .font(.system(size: 11, weight: .black, design: .default))
                     .tracking(1)
                 Spacer()
                 Text("NET")
-                    .font(.system(size: 9, weight: .black, design: .monospaced))
+                    .font(.system(size: 9, weight: .black, design: .default))
                     .tracking(1)
             }
             .foregroundStyle(TPPlayTheme.primaryText)
@@ -525,30 +549,30 @@ private struct ConnectionRouteDialog: View {
             VStack(alignment: .leading, spacing: 16) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(consoleName.uppercased())
-                        .font(.system(size: 15, weight: .black, design: .monospaced))
+                        .font(.system(size: 15, weight: .black, design: .default))
                         .foregroundStyle(TPPlayTheme.primaryText)
                         .lineLimit(1)
-                    Text("SELECT HOW TP PLAY REACHES THIS CONSOLE")
-                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                    Text("اختر طريقة الاتصال بجهازك")
+                        .font(.system(size: 9, weight: .medium, design: .default))
                         .tracking(0.5)
                         .foregroundStyle(TPPlayTheme.secondaryText)
                 }
 
                 HStack(spacing: 8) {
-                    routeButton("AUTO", detail: automaticDetail, value: .automatic)
-                    routeButton("MANUAL", detail: "DIRECT IP / TAILSCALE", value: .manual)
+                    routeButton("تلقائي", detail: automaticDetail, value: .automatic)
+                    routeButton("يدوي", detail: "DIRECT IP / TAILSCALE", value: .manual)
                 }
 
                 if route == .manual {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("DIRECT ENDPOINT").acidLabel()
-                        TextField("IP ADDRESS OR HOSTNAME", text: $manualAddress)
+                        Text("عنوان الجهاز").acidLabel()
+                        TextField("عنوان IP أو اسم الجهاز", text: $manualAddress)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .keyboardType(.numbersAndPunctuation)
                             .textFieldStyle(AcidFieldStyle())
-                        Text("THE ADDRESS IS SAVED ONLY AFTER A SUCCESSFUL CONNECTION.")
-                            .font(.system(size: 8, weight: .bold, design: .monospaced))
+                        Text("يُحفظ العنوان بعد نجاح الاتصال.")
+                            .font(.system(size: 8, weight: .bold, design: .default))
                             .tracking(0.35)
                             .foregroundStyle(TPPlayTheme.tertiaryText)
                     }
@@ -556,11 +580,11 @@ private struct ConnectionRouteDialog: View {
                 }
 
                 HStack(spacing: 8) {
-                    Button("CANCEL", action: onCancel)
+                    Button("إلغاء", action: onCancel)
                         .frame(width: 96)
                         .frame(minHeight: 46)
                         .buttonStyle(AcidButtonStyle())
-                    Button(route == .automatic ? "START AUTO >" : "CONNECT DIRECT >") {
+                    Button(route == .automatic ? "اتصال تلقائي" : "اتصال مباشر") {
                         if route == .automatic { onAutomatic() }
                         else { onManual(cleanAddress) }
                     }
@@ -571,8 +595,9 @@ private struct ConnectionRouteDialog: View {
             }
             .padding(16)
             .background(TPPlayTheme.surface)
+        .clipShape(RoundedRectangle(cornerRadius: 18))
         }
-        .overlay { Rectangle().stroke(TPPlayTheme.violet, lineWidth: 2) }
+        .overlay { RoundedRectangle(cornerRadius: 18).stroke(TPPlayTheme.violet, lineWidth: 2) }
         .preferredColorScheme(.dark)
         .accessibilityElement(children: .contain)
     }
@@ -592,7 +617,7 @@ private struct ConnectionRouteDialog: View {
                         .foregroundStyle(route == value ? TPPlayTheme.onAccent.opacity(0.62) : TPPlayTheme.tertiaryText)
                 }
                 Text(detail)
-                    .font(.system(size: 8, weight: .bold, design: .monospaced))
+                    .font(.system(size: 8, weight: .bold, design: .default))
                     .tracking(0.3)
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
@@ -612,7 +637,7 @@ private struct ConsoleGlyph: View {
             .foregroundStyle(TPPlayTheme.accent)
             .frame(width: 48, height: 48)
             .background(TPPlayTheme.canvas)
-            .overlay { Rectangle().stroke(TPPlayTheme.violet, lineWidth: 1) }
+            .overlay { RoundedRectangle(cornerRadius: 18).stroke(TPPlayTheme.violet, lineWidth: 1) }
     }
 }
 
@@ -627,29 +652,29 @@ private struct ManualConsoleView: View {
             TPPlayTheme.canvas.ignoresSafeArea()
             VStack(alignment: .leading, spacing: 20) {
                 HStack {
-                    Text("ADD // CONSOLE")
-                        .font(.system(size: 13, weight: .black, design: .monospaced))
+                    Text("إضافة جهاز")
+                        .font(.system(size: 13, weight: .black, design: .default))
                         .foregroundStyle(TPPlayTheme.accent)
                     Spacer()
                     Button("X") { dismiss() }
                         .frame(width: 42, height: 42)
                         .buttonStyle(AcidButtonStyle())
                 }
-                Text("CONSOLE TYPE").acidLabel()
+                Text("نوع الجهاز").acidLabel()
                 HStack(spacing: 8) {
                     typeButton("PLAYSTATION 5", value: true)
                     typeButton("PLAYSTATION 4", value: false)
                 }
-                Text("NETWORK ADDRESS").acidLabel()
-                TextField("IP ADDRESS OR HOSTNAME", text: $address)
+                Text("عنوان الشبكة").acidLabel()
+                TextField("عنوان IP أو اسم الجهاز", text: $address)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .textFieldStyle(AcidFieldStyle())
-                Text("ENTER THE CONSOLE ADDRESS, THEN COMPLETE REMOTE PLAY PAIRING.")
-                    .font(.system(size: 9, weight: .medium, design: .monospaced))
+                Text("أدخل عنوان الجهاز، ثم أكمل خطوات الاقتران باللعب عن بُعد.")
+                    .font(.system(size: 9, weight: .medium, design: .default))
                     .foregroundStyle(TPPlayTheme.secondaryText)
                 Spacer()
-                Button("CONTINUE TO LINK >") { onAdd(address, isPS5) }
+                Button("متابعة الاقتران") { onAdd(address, isPS5) }
                     .frame(maxWidth: .infinity, minHeight: 48)
                     .buttonStyle(AcidButtonStyle(active: true))
                     .disabled(address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -668,7 +693,7 @@ private struct ManualConsoleView: View {
 
 private extension View {
     func acidLabel() -> some View {
-        font(.system(size: 10, weight: .bold, design: .monospaced))
+        font(.system(size: 10, weight: .bold, design: .default))
             .tracking(0.8)
             .foregroundStyle(TPPlayTheme.secondaryText)
     }
