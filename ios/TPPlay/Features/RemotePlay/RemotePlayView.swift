@@ -11,6 +11,7 @@ struct RemotePlayView: View {
     @ObservedObject private var assistance = AssistanceState.shared
     @AppStorage("velmira.showMetrics") private var showMetrics = true
     @State private var calibrationShot: CalibrationShot?
+    @State private var playerNameShot: CalibrationShot?
     @State private var calibrationError = false
     @State private var loginPIN = ""
     @State private var hasExternalController = false
@@ -59,6 +60,19 @@ struct RemotePlayView: View {
                         }
                     } label: { Label("معايرة", systemImage: "eyedropper") }
                     .padding(10).background(.black.opacity(0.7), in: Capsule())
+                    Button {
+                        session.suspendAssistance(preserveActivation: true)
+                        if let image = session.calibrationFrames.image() {
+                            playerNameShot = CalibrationShot(image: image)
+                        } else {
+                            calibrationError = true
+                            session.resumeAssistance()
+                        }
+                    } label: {
+                        Label("اسم خصم", systemImage: "text.viewfinder")
+                    }
+                    .padding(10).background(.black.opacity(0.7), in: Capsule())
+                    .accessibilityLabel("اختر اسم لاعب ولونه من صورة البث")
                     Button { showMetrics.toggle() } label: {
                         Image(systemName: "chart.bar.xaxis").padding(10)
                     }.background(.black.opacity(0.7), in: Capsule())
@@ -154,6 +168,11 @@ struct RemotePlayView: View {
         }) { shot in
             StreamCalibrationView(shot: shot).preferredColorScheme(.dark)
         }
+        .sheet(item: $playerNameShot, onDismiss: {
+            if scenePhase == .active { session.resumeAssistance() }
+        }) { shot in
+            PlayerNameCaptureView(shot: shot).preferredColorScheme(.dark)
+        }
         .alert("لا توجد لقطة حديثة", isPresented: $calibrationError) {
             Button("حسناً", role: .cancel) {}
         } message: { Text("انتظر ظهور بث PS5 ثم افتح المعايرة مجدداً.") }
@@ -202,7 +221,7 @@ struct RemotePlayView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 AIFrameAnalyzer.shared.setPaused(false)
-                if calibrationShot == nil { session.resumeAssistance() }
+                if calibrationShot == nil && playerNameShot == nil { session.resumeAssistance() }
                 UIApplication.shared.isIdleTimerDisabled = true
                 if wasBackgrounded {
                     wasBackgrounded = false
