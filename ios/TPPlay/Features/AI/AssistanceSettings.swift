@@ -3,6 +3,7 @@ import GameController
 import CoreVideo
 import CoreImage
 import UIKit
+import Vision
 
 @MainActor
 final class AssistanceState: ObservableObject {
@@ -485,5 +486,290 @@ struct StreamCalibrationView: View {
         AIAnalysisState.shared.colorHue = hue
         AIAnalysisState.shared.colorMode = true
         dismiss()
+    }
+}
+
+
+// MARK: - Select an on-screen player name from a frozen PS5 video frame.
+// The capture remains on-device. OCR and color are visual suggestions;
+// the user explicitly confirms the player's team before saving.
+
+extension UIColor {
+    convenience init?(hexRGB text: String) {
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "#", with: "")
+        guard normalized.count == 6, let number = UInt32(normalized, radix: 16) else {
+            return nil
+        }
+        self.init(red: CGFloat((number >> 16) & 0xFF) / 255,
+                  green: CGFloat((number >> 8) & 0xFF) / 255,
+                  blue: CGFloat(number & 0xFF) / 255,
+                  alpha: 1)
+    }
+
+    var hueValue: Double {
+        var hue: CGFloat = 0
+        var saturation: CGFloat = 0
+        var brightness: CGFloat = 0
+        var alpha: CGFloat = 0
+        getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
+        return Double(hue)
+    }
+}
+
+private final class OnDeviceNameFrame: @unchecked Sendable {
+    let image: CGImage
+    init(image: CGImage) { self.image = image }
+}
+
+private struct NameOnScreen: Identifiable, Sendable {
+    let id: UUID
+    let name: String
+    /// Vision coordinates, with origin at lower left.
+    let rectangle: CGRect
+
+    init(name: String, rectangle: CGRect) {
+        self.id = UUID()
+        self.name = name
+        self.rectangle = rectangle
+    }
+
+    var topLeftRectangle: CGRect {
+        CGRect(x: rectangle.minX, y: 1 - rectangle.maxY,
+               width: rectangle.width, height: rectangle.height)
+    }
+}
+
+private enum NameColorSampler {
+    /// Pick a frequent bright/saturated foreground color inside the OCR text box.
+    /// If the name is white/grey, return nil rather than falsely selecting a hue.
+    static func suggestedHEX(in image: CGImage, region: CGRect) -> String? {
+        let size = CGSize(width: image.width, height: image.height)
+        let box = CGRect(x: region.minX * size.width,
+                         y: (1 - region.maxY) * size.height,
+                         width: region.width * size.width,
+                         height: region.height * size.height).integral
+        let frameBounds = CGRect(origin: .zero, size: size)
+        let clipped = box.intersection(frameBounds)
+        guard !clipped.isNull, clipped.width >= 2, clipped.height >= 2,
+              let cropped = image.cropping(to: clipped) else { return nil }
+
+        let columns = max(1, min(96, cropped.width))
+        let rows = max(1, min(32, cropped.height))
+        var pixels = [UInt8](repeating: 0, count: columns * rows * 4)
+        let rendered = pixels.withUnsafeMutableBytes { raw -> Bool in
+            guard let ctx = CGContext(data: raw.baseAddress, width: columns, height: rows,
+                                      bitsPerComponent: 8, bytesPerRow: columns * 4,
+                                      space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+                return false
+            }
+            ctx.interpolationQuality = .medium
+            ctx.draw(cropped, in: CGRect(x: 0, y: 0, width: columns, height: rows))
+            return true
+        }
+        guard rendered else { return nil }
+
+        var counts = [Int](repeating: 0, count: 24)
+        var reds = [Int](repeating: 0, count: 24)
+        var greens = [Int](repeating: 0, count: 24)
+        var blues = [Int](repeating: 0, count: 24)
+        for offset in stride(from: 0, to: pixels.count, by: 4) {
+            let r = pixels[offset], g = pixels[offset + 1], b = pixels[offset + 2]
+            let color = UIColor(red: CGFloat(r) / 255, green: CGFloat(g) / 255,
+                                blue: CGFloat(b) / 255, alpha: 1)
+            var hue: CGFloat = 0, saturation: CGFloat = 0
+            var brightness: CGFloat = 0, alpha: CGFloat = 0
+            color.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
+            guard saturation >= 0.4, brightness >= 0.45 else { continue }
+            let bin = min(23, Int(hue * 24))
+            counts[bin] += 1
+            reds[bin] += Int(r)
+            greens[bin] += Int(g)
+            blues[bin] += Int(b)
+        }
+
+        guard let preferred = counts.indices.max(by: { counts[$0] < counts[$1] }),
+              counts[preferred] >= 3 else { return nil }
+        let number = counts[preferred]
+        return String(format: "#%02X%02X%02X",
+                      reds[preferred] / number,
+                      greens[preferred] / number,
+                      blues[preferred] / number)
+    }
+}
+
+struct PlayerNameCaptureView: View {
+    let shot: CalibrationShot
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var roster = MatchRoster.shared
+    @ObservedObject private var vision = AIAnalysisState.shared
+
+    @State private var recognized: [NameOnScreen] = []
+    @State private var isReading = true
+    @State private var chosenID: UUID?
+    @State private var chosenName = ""
+    @State private var chosenHEX = ""
+    @State private var message = "المس اسم اللاعب في الصورة لاختيار النص ولونه."
+    @State private var saved = false
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 14) {
+                    Text("لقطة ثابتة من البث. المس اسم اللاعب فوق شخصيته، وراجع الاسم واللون قبل وضعه في فريق الخصم.")
+                        .font(.footnote)
+                    GeometryReader { geometry in
+                        let ratio = CGFloat(shot.image.width) / CGFloat(shot.image.height)
+                        let width = min(geometry.size.width, geometry.size.height * ratio)
+                        let height = width / ratio
+                        let left = (geometry.size.width - width) / 2
+                        let top = (geometry.size.height - height) / 2
+                        ZStack(alignment: .topLeading) {
+                            Color.black
+                            Image(decorative: shot.image, scale: 1)
+                                .resizable()
+                                .frame(width: width, height: height)
+                                .offset(x: left, y: top)
+                            ForEach(recognized) { entry in
+                                let r = entry.topLeftRectangle
+                                RoundedRectangle(cornerRadius: 3)
+                                    .stroke(entry.id == chosenID ? Color.green : Color.yellow.opacity(0.5),
+                                            lineWidth: entry.id == chosenID ? 2 : 1)
+                                    .frame(width: r.width * width, height: r.height * height)
+                                    .position(x: left + r.midX * width, y: top + r.midY * height)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture { location in
+                            guard width > 0, height > 0,
+                                  location.x >= left, location.x <= left + width,
+                                  location.y >= top, location.y <= top + height else { return }
+                            let normalized = CGPoint(x: (location.x - left) / width,
+                                                     y: (location.y - top) / height)
+                            selectName(at: normalized)
+                        }
+                    }
+                    .frame(height: 300)
+                    .environment(\.layoutDirection, .leftToRight)
+
+                    if isReading {
+                        HStack { ProgressView(); Text("جارٍ قراءة الأسماء من صورة البث…") }
+                    }
+                    Text(message).font(.footnote).foregroundStyle(.orange)
+
+                    TextField("اسم اللاعب — يمكنك تصحيحه", text: $chosenName)
+                        .textFieldStyle(AcidFieldStyle())
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .environment(\.layoutDirection, .leftToRight)
+                    HStack {
+                        TextField("لون الاسم HEX: #FF0000", text: $chosenHEX)
+                            .textFieldStyle(AcidFieldStyle())
+                            .textInputAutocapitalization(.characters)
+                            .autocorrectionDisabled()
+                            .environment(\.layoutDirection, .leftToRight)
+                        if let color = UIColor(hexRGB: chosenHEX) {
+                            Circle().fill(Color(uiColor: color)).frame(width: 24, height: 24)
+                        }
+                    }
+                    Text("قراءة الاسم واللون تقديرية. اللون الواحد قد يظهر أيضًا فوق حليف أو عنصر آخر؛ تأكد من الفريق قبل الحفظ.")
+                        .font(.footnote).foregroundStyle(.orange)
+                    Button("حفظ الاسم في الخصوم واستخدام لون التتبّع") {
+                        guard !chosenName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                              let color = UIColor(hexRGB: chosenHEX) else { return }
+                        let normalizedHEX = chosenHEX.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let hex = normalizedHEX.hasPrefix("#") ? normalizedHEX : "#" + normalizedHEX
+                        roster.saveSelectedOpponent(name: chosenName, colorHEX: hex)
+                        if !roster.names.contains(where: {
+                            $0.side == .opponent &&
+                            $0.name.localizedCaseInsensitiveCompare(chosenName.trimmingCharacters(in: .whitespacesAndNewlines)) == .orderedSame
+                        }) {
+                            message = roster.message
+                            return
+                        }
+                        vision.colorHue = color.hueValue
+                        vision.colorMode = true
+                        vision.enabled = true
+                        saved = true
+                        dismiss()
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 50)
+                    .buttonStyle(AcidButtonStyle(active: true))
+                    .disabled(chosenName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                              UIColor(hexRGB: chosenHEX) == nil)
+                    Text("تفعيل لون التتبّع لا يفعّل المساعدة على التحكم تلقائيًا.")
+                        .font(.footnote)
+                }
+                .padding(20)
+            }
+            .background(TPPlayTheme.canvas)
+            .navigationTitle("التقاط اسم الخصم ولونه")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("إغلاق") { dismiss() }
+                }
+            }
+        }
+        .environment(\.layoutDirection, .rightToLeft)
+        .task { await findNames() }
+    }
+
+    @MainActor
+    private func findNames() async {
+        isReading = true
+        let image = OnDeviceNameFrame(image: shot.image)
+        let matches: [NameOnScreen] = await Task.detached(priority: .userInitiated) {
+            let request = VNRecognizeTextRequest()
+            request.recognitionLevel = .accurate
+            request.usesLanguageCorrection = false
+            do {
+                try VNImageRequestHandler(cgImage: image.image, orientation: .up, options: [:])
+                    .perform([request])
+                return (request.results ?? []).compactMap { observation -> NameOnScreen? in
+                    guard let top = observation.topCandidates(1).first,
+                          top.confidence >= 0.3 else { return nil }
+                    let name = top.string.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard name.count >= 2 && name.count <= 64,
+                          name.rangeOfCharacter(from: .letters) != nil else { return nil }
+                    return NameOnScreen(name: name, rectangle: observation.boundingBox)
+                }
+            } catch { return [] }
+        }.value
+        guard !Task.isCancelled else { return }
+        recognized = matches
+        isReading = false
+        if matches.isEmpty {
+            message = "لم تُقرأ أسماء واضحة. يمكنك إدخال الاسم واللون يدويًا، أو إعادة الالتقاط حين يظهر الاسم بوضوح."
+        } else {
+            message = "المس اسم اللاعب داخل الإطار الأصفر، ثم تأكد من البيانات قبل الحفظ."
+        }
+    }
+
+    private func selectName(at point: CGPoint) {
+        guard !recognized.isEmpty else {
+            message = "لا توجد أسماء مكتشفة في هذه النقطة. اكتب الاسم ولونه يدويًا."
+            return
+        }
+        let candidates = recognized.compactMap { item -> (NameOnScreen, CGFloat)? in
+            let rect = item.topLeftRectangle.insetBy(dx: -0.015, dy: -0.018)
+            guard rect.contains(point) else { return nil }
+            return (item, hypot(item.topLeftRectangle.midX - point.x,
+                                item.topLeftRectangle.midY - point.y))
+        }
+        guard let nearest = candidates.min(by: { $0.1 < $1.1 })?.0 else {
+            message = "المس الحروف داخل الإطار الأصفر، أو اكتب الاسم يدويًا."
+            return
+        }
+        chosenID = nearest.id
+        chosenName = nearest.name
+        if let detectedColor = NameColorSampler.suggestedHEX(in: shot.image, region: nearest.rectangle) {
+            chosenHEX = detectedColor
+            message = "تم التعرف على الاسم واللون المقترح. راجعهما قبل الحفظ."
+        } else {
+            chosenHEX = ""
+            message = "تم التعرف على الاسم، ولكن لونه غير واضح. أدخل رمز اللون HEX يدويًا."
+        }
     }
 }
