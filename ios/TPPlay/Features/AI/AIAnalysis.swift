@@ -264,6 +264,8 @@ struct RosterName: Identifiable {
     let id = UUID()
     var name: String
     var side: RosterSide = .unknown
+    /// Saved visual identifier; it does not verify which team the player belongs to.
+    var nameColorHEX: String? = nil
 }
 @MainActor
 final class MatchRoster: ObservableObject {
@@ -273,6 +275,29 @@ final class MatchRoster: ObservableObject {
     @Published var message = "ابدأ مباراة جديدة ثم أضف صورة لوحة النتائج."
     @Published var matchNumber = 1
     private var generation = UUID()
+
+    /// Explicit user confirmation is required before an OCR name becomes an opponent.
+    func saveSelectedOpponent(name: String, colorHEX: String) {
+        let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard clean.count >= 2, clean.count <= 64,
+              clean.rangeOfCharacter(from: .letters) != nil else {
+            message = "اسم اللاعب غير صالح؛ صحح الاسم وأعد الحفظ."
+            return
+        }
+        let normalizedColor = colorHEX.uppercased()
+        guard normalizedColor.count == 7, normalizedColor.hasPrefix("#"),
+              UInt32(normalizedColor.dropFirst(), radix: 16) != nil else {
+            message = "لون الاسم غير صالح؛ استخدم #RRGGBB."
+            return
+        }
+        if let index = names.firstIndex(where: { $0.name.localizedCaseInsensitiveCompare(clean) == .orderedSame }) {
+            names[index].side = .opponent
+            names[index].nameColorHEX = normalizedColor
+        } else {
+            names.append(RosterName(name: clean, side: .opponent, nameColorHEX: normalizedColor))
+        }
+        message = "حُفظ \(clean) في الخصوم مع لون الاسم \(normalizedColor). راجع الانتماء للفريق يدويًا."
+    }
     func reset() {
         generation = UUID()
         names = []; reading = false; matchNumber += 1
@@ -348,6 +373,21 @@ struct MatchRosterView: View {
                                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                                         .textFieldStyle(AcidFieldStyle())
                                         .environment(\.layoutDirection, .leftToRight)
+                                    if let hex = entry.nameColorHEX {
+                                        HStack(spacing: 8) {
+                                            Circle().fill(Color(uiColor: UIColor(hexRGB: hex) ?? .gray))
+                                                .frame(width: 13, height: 13)
+                                            Text("لون الاسم: \(hex)")
+                                                .font(.caption.monospaced())
+                                            Spacer()
+                                            Button("استخدام اللون") {
+                                                if let hue = UIColor(hexRGB: hex)?.hueValue {
+                                                    AIAnalysisState.shared.colorHue = hue
+                                                    AIAnalysisState.shared.colorMode = true
+                                                }
+                                            }.font(.caption)
+                                        }
+                                    }
                                     HStack {
                                         Menu {
                                             ForEach(RosterSide.allCases) { choice in
