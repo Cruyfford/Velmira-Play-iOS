@@ -35,6 +35,8 @@
 		A10000000000000000000002 /* TrackingEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002 /* TrackingEngine.swift */; };
 		A10000000000000000000003 /* AssistanceSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000003 /* AssistanceSettings.swift */; };
 		A10000000000000000000004 /* ColorTargetDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000004 /* ColorTargetDetector.swift */; };
+		A20000000000000000000005 /* MW3WeaponProfiles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TPPlay/Features/Settings/MW3WeaponProfiles.swift; sourceTree = SOURCE_ROOT; };
+		A10000000000000000000005 /* MW3WeaponProfiles.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000005 /* MW3WeaponProfiles.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -223,6 +225,7 @@
 			children = (
 				200000000000000000000015 /* SettingsView.swift */,
 				200000000000000000000020 /* TouchLayoutSettingsView.swift */,
+				A20000000000000000000005 /* MW3WeaponProfiles.swift */,
 				200000000000000000000021 /* LinkDiagnostic.swift */,
 			);
 			path = Settings;
@@ -352,6 +355,7 @@
 				A11000000000000000000001 /* AIAnalysis.swift in Sources */,
 				A10000000000000000000004 /* ColorTargetDetector.swift in Sources */,
 				A10000000000000000000003 /* AssistanceSettings.swift in Sources */,
+				A10000000000000000000005 /* MW3WeaponProfiles.swift in Sources */,
 				A10000000000000000000002 /* TrackingEngine.swift in Sources */,
 				100000000000000000000002 /* RootView.swift in Sources */,
 				100000000000000000000003 /* TPPlayTheme.swift in Sources */,
