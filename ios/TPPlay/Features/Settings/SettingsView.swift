@@ -60,9 +60,10 @@ struct VelmiraAdvancedSettings: View {
     @StateObject private var psnLibrary = PSNLibraryStore.shared
     @StateObject private var psnAuthenticator = PSNWebAuthenticator()
     @ObservedObject private var touchLayouts = TouchLayoutStore.shared
-    @AppStorage("streamResolution") private var resolution = 1080
-    @AppStorage("streamFPS") private var fps = 60
-    @AppStorage("streamBitrate") private var bitrate = 15_000
+    @State private var resolution = 1080
+    @State private var fps = 60
+    @State private var bitrate = 15_000
+    @State private var saveNotice = ""
     @State private var showingTouchLayouts = false
     @State private var showingLinkDiagnostic = false
 
@@ -112,7 +113,19 @@ struct VelmiraAdvancedSettings: View {
                         bitrate = 15_000
                     }
                     .frame(maxWidth: .infinity, minHeight: 44)
+                    .buttonStyle(AcidButtonStyle())
+                    Button {
+                        UserDefaults.standard.set(resolution, forKey: "streamResolution")
+                        UserDefaults.standard.set(fps, forKey: "streamFPS")
+                        UserDefaults.standard.set(bitrate, forKey: "streamBitrate")
+                        saveNotice = "تم حفظ جودة البث، وستستخدم في الاتصال التالي."
+                    } label: {
+                        Label("حفظ إعدادات جودة البث", systemImage: "square.and.arrow.down")
+                            .frame(maxWidth: .infinity, minHeight: 48)
+                    }
                     .buttonStyle(AcidButtonStyle(active: true))
+                    Text(saveNotice.isEmpty ? "التغييرات مؤقتة حتى تضغط حفظ الإعدادات." : saveNotice)
+                        .font(.footnote)
                 }
                 .padding(16)
                 .background(TPPlayTheme.surface)
@@ -138,12 +151,22 @@ struct VelmiraAdvancedSettings: View {
             }
         }
         .background(TPPlayTheme.canvas)
+        .onAppear { loadStreamSettings() }
+        .onDisappear { loadStreamSettings() }
         .fullScreenCover(isPresented: $showingTouchLayouts) {
             TouchLayoutSettingsView()
         }
         .fullScreenCover(isPresented: $showingLinkDiagnostic) {
             LinkDiagnosticView()
         }
+    }
+
+    private func loadStreamSettings() {
+        let defaults = UserDefaults.standard
+        resolution = defaults.object(forKey: "streamResolution") as? Int ?? 1080
+        fps = defaults.object(forKey: "streamFPS") as? Int ?? 60
+        bitrate = defaults.object(forKey: "streamBitrate") as? Int ?? 15_000
+        saveNotice = ""
     }
 
     private var touchControlsPanel: some View {
