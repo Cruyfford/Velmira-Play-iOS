@@ -3,7 +3,7 @@ import SwiftUI
 struct ConsoleLibraryView: View {
     @StateObject private var discovery = ConsoleDiscoveryStore()
     @StateObject private var registeredConsoles = RegisteredConsoleStore()
-    @StateObject private var remoteCredentials = RemoteCredentialStore()
+    @ObservedObject private var remoteCredentials = RemoteCredentialStore.shared
     @StateObject private var manualConnections = ManualConnectionHistoryStore()
     @State private var consoleToRegister: DiscoveredConsole?
     @State private var pendingConsoleRegistration: DiscoveredConsole?
@@ -14,6 +14,7 @@ struct ConsoleLibraryView: View {
     @State private var connectionActivityText: String?
     @State private var connectionPrompt: ConsoleConnectionPrompt?
     @State private var showingManualConsole = false
+    @State private var showingRemoteSetup = false
     @AppStorage("streamResolution") private var streamResolution = 1080
     @AppStorage("streamFPS") private var streamFPS = 60
     @AppStorage("streamBitrate") private var streamBitrate = 15_000
@@ -53,6 +54,11 @@ struct ConsoleLibraryView: View {
                                 Image(systemName: "chevron.forward")
                             }.padding(18).frame(maxWidth: .infinity)
                         }.buttonStyle(AcidButtonStyle())
+                        Button { showingRemoteSetup = true } label: {
+                            Label("إعداد الاتصال البعيد (5G / الإنترنت)", systemImage: "globe")
+                                .frame(maxWidth: .infinity, minHeight: 48)
+                        }
+                        .buttonStyle(AcidButtonStyle())
                         if !registeredConsoles.consoles.isEmpty { consoleSection }
                         else { emptyConsoleState }
                         if let storageError = registeredConsoles.storageError {
@@ -87,6 +93,11 @@ struct ConsoleLibraryView: View {
                         self.connectionPrompt = nil
                         startManualSession(for: connectionPrompt.console, address: address)
                     },
+                    internetAvailable: connectionPrompt.remoteAvailable,
+                    onInternet: {
+                        self.connectionPrompt = nil
+                        startRemoteInternetSession(for: connectionPrompt.console)
+                    },
                     onCancel: { self.connectionPrompt = nil }
                 )
                 .frame(maxWidth: 430)
@@ -106,6 +117,17 @@ struct ConsoleLibraryView: View {
                 .transition(.opacity)
                 .zIndex(3)
             }
+        }
+        .sheet(isPresented: $showingRemoteSetup) {
+            NavigationStack {
+                RemotePlayInternetSettingsView()
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("إغلاق") { showingRemoteSetup = false }
+                        }
+                    }
+            }
+            .preferredColorScheme(.dark)
         }
         .fullScreenCover(item: $consoleToRegister) { console in
             ConsoleRegistrationView(console: console, store: registeredConsoles)
@@ -275,6 +297,30 @@ struct ConsoleLibraryView: View {
                     return
                 }
                 presentSession(console: registered, remote: remote)
+            } catch {
+                wakeError = error.localizedDescription
+            }
+        }
+    }
+
+    private func startRemoteInternetSession(for registered: RegisteredConsole) {
+        guard remoteCredentials.canAttemptRemoteConnection(for: registered) else {
+            wakeError = "يلزم ربط حساب PSN وتحديد PS5 من زر «إعداد الاتصال البعيد» أولًا."
+            return
+        }
+        connectingConsoleID = registered.id
+        connectionActivityText = "CONNECTING THROUGH PLAYSTATION NETWORK"
+        Task { @MainActor in
+            defer {
+                connectingConsoleID = nil
+                connectionActivityText = nil
+            }
+            do {
+                guard let connection = try await remoteCredentials.connection(for: registered) else {
+                    wakeError = "لم يتم اختيار جهاز PlayStation صالح للاتصال البعيد."
+                    return
+                }
+                presentSession(console: registered, remote: connection)
             } catch {
                 wakeError = error.localizedDescription
             }
@@ -493,12 +539,15 @@ private struct ConnectionRouteDialog: View {
     private enum Route {
         case automatic
         case manual
+        case internet
     }
 
     let consoleName: String
     let automaticDetail: String
     let onAutomatic: () -> Void
     let onManual: (String) -> Void
+    let internetAvailable: Bool
+    let onInternet: () -> Void
     let onCancel: () -> Void
 
     @State private var route: Route = .automatic
@@ -510,12 +559,16 @@ private struct ConnectionRouteDialog: View {
         initialManualAddress: String,
         onAutomatic: @escaping () -> Void,
         onManual: @escaping (String) -> Void,
+        internetAvailable: Bool,
+        onInternet: @escaping () -> Void,
         onCancel: @escaping () -> Void
     ) {
         self.consoleName = consoleName
         self.automaticDetail = automaticDetail
         self.onAutomatic = onAutomatic
         self.onManual = onManual
+        self.internetAvailable = internetAvailable
+        self.onInternet = onInternet
         self.onCancel = onCancel
         _manualAddress = State(initialValue: initialManualAddress)
     }
@@ -560,9 +613,14 @@ private struct ConnectionRouteDialog: View {
 
                 HStack(spacing: 8) {
                     routeButton("تلقائي", detail: automaticDetail, value: .automatic)
-                    routeButton("يدوي", detail: "DIRECT IP / TAILSCALE", value: .manual)
+                    routeButton("يدوي", detail: "IP / VPN", value: .manual)
+                    routeButton("5G", detail: "PLAYSTATION NETWORK", value: .internet)
                 }
 
+                if route == .internet && !internetAvailable {
+                    Text("اربط حساب PSN وحدد جهازك من «إعداد الاتصال البعيد» أولًا.")
+                        .font(.footnote).foregroundStyle(.orange)
+                }
                 if route == .manual {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("عنوان الجهاز").acidLabel()
@@ -584,13 +642,18 @@ private struct ConnectionRouteDialog: View {
                         .frame(width: 96)
                         .frame(minHeight: 46)
                         .buttonStyle(AcidButtonStyle())
-                    Button(route == .automatic ? "اتصال تلقائي" : "اتصال مباشر") {
-                        if route == .automatic { onAutomatic() }
-                        else { onManual(cleanAddress) }
+                    Button(route == .automatic ? "اتصال تلقائي" :
+                           (route == .internet ? "اتصال عبر PSN" : "اتصال مباشر")) {
+                        switch route {
+                        case .automatic: onAutomatic()
+                        case .manual: onManual(cleanAddress)
+                        case .internet: onInternet()
+                        }
                     }
                     .frame(maxWidth: .infinity, minHeight: 46)
                     .buttonStyle(AcidButtonStyle(active: true))
-                    .disabled(route == .manual && cleanAddress.isEmpty)
+                    .disabled((route == .manual && cleanAddress.isEmpty) ||
+                              (route == .internet && !internetAvailable))
                 }
             }
             .padding(16)
@@ -613,7 +676,7 @@ private struct ConnectionRouteDialog: View {
                         .frame(width: 6, height: 6)
                     Text(title)
                     Spacer(minLength: 0)
-                    Text(value == .automatic ? "A" : "M")
+                    Text(value == .automatic ? "A" : (value == .internet ? "5G" : "M"))
                         .foregroundStyle(route == value ? TPPlayTheme.onAccent.opacity(0.62) : TPPlayTheme.tertiaryText)
                 }
                 Text(detail)
