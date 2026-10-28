@@ -303,8 +303,7 @@ enum LinkProbe {
             status = "أغلق البث أولاً وانتظر انتهاء الاتصال، ثم ابدأ الاختبار."
             return
         }
-        do { try DiagnosticCredential.save(token) }
-        catch { status = error.localizedDescription; return }
+        // Running diagnostics must not silently commit an edited credential.
         running = true
         Self.isTesting = true
         results = []
@@ -341,8 +340,9 @@ struct LinkDiagnosticView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var model = LinkDiagnosticModel()
-    @AppStorage("linkDiagnosticHost") private var host = ""
+    @State private var host = UserDefaults.standard.string(forKey: "linkDiagnosticHost") ?? ""
     @State private var token = DiagnosticCredential.load()
+    @State private var saveNotice = ""
     var body: some View {
         VStack(spacing: 0) {
             HStack {
@@ -368,6 +368,26 @@ struct LinkDiagnosticView: View {
                         .padding(12).frame(minHeight: 44).background(TPPlayTheme.surface).clipShape(RoundedRectangle(cornerRadius: 16))
                         .overlay { RoundedRectangle(cornerRadius: 16).stroke(TPPlayTheme.border, lineWidth: 1) }
                         .disabled(model.running)
+                    Button {
+                        do {
+                            try DiagnosticCredential.save(token)
+                            UserDefaults.standard.set(host, forKey: "linkDiagnosticHost")
+                            saveNotice = "تم حفظ خادم الفحص ومفتاحه بأمان."
+                        } catch {
+                            saveNotice = "تعذر حفظ مفتاح خادم الفحص."
+                        }
+                    } label: {
+                        Label("حفظ إعدادات فحص الاتصال", systemImage: "square.and.arrow.down")
+                            .frame(maxWidth: .infinity, minHeight: 48)
+                    }
+                    .buttonStyle(AcidButtonStyle(active: true))
+                    Button("استعادة آخر إعدادات محفوظة") {
+                        host = UserDefaults.standard.string(forKey: "linkDiagnosticHost") ?? ""
+                        token = DiagnosticCredential.load()
+                        saveNotice = "تم استعادة إعدادات الفحص المحفوظة."
+                    }
+                    Text(saveNotice.isEmpty ? "التغييرات في الخادم والمفتاح لا تُحفظ إلا عند الضغط على حفظ." : saveNotice)
+                        .font(.footnote)
                     Button(model.running ? "إيقاف الاختبار" : "بدء الاختبار") {
                         if model.running { model.cancel() } else { model.start(host: host, token: token) }
                     }.frame(maxWidth: .infinity, minHeight: 48).buttonStyle(AcidButtonStyle(active: !model.running))
@@ -409,7 +429,11 @@ struct LinkDiagnosticView: View {
         .font(.system(size: 15, weight: .medium))
         .environment(\.layoutDirection, .rightToLeft)
         .foregroundStyle(TPPlayTheme.primaryText).background(TPPlayTheme.canvas)
-        .onDisappear { model.cancel() }
+        .onDisappear {
+            model.cancel()
+            host = UserDefaults.standard.string(forKey: "linkDiagnosticHost") ?? ""
+            token = DiagnosticCredential.load()
+        }
         .onChange(of: scenePhase) { _, phase in if phase != .active { model.cancel() } }
     }
 }
