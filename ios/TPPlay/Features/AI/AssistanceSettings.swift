@@ -538,6 +538,11 @@ struct StreamCalibrationView: View {
         // Keep the user's choice; the engine will require L2/R2 release on resume.
         AIAnalysisState.shared.colorHue = hue
         AIAnalysisState.shared.colorMode = true
+        guard AIAnalysisState.shared.saveSettings(),
+              AssistanceState.shared.saveSettings() else {
+            message = "تعذر حفظ المعايرة. حاول مرة أخرى."
+            return
+        }
         dismiss()
     }
 }
@@ -744,6 +749,10 @@ struct PlayerNameCaptureView: View {
                         vision.colorHue = color.hueValue
                         vision.colorMode = true
                         vision.enabled = true
+                        guard vision.saveSettings() else {
+                            message = "حُفظ اسم اللاعب، لكن تعذر حفظ إعداد اللون."
+                            return
+                        }
                         saved = true
                         dismiss()
                     }
