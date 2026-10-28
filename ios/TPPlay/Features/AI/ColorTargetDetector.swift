@@ -100,6 +100,7 @@ struct StableDetectionFilter {
         let id: UUID
         let box: CGRect
         let hits: Int
+        let missedFrames: Int
     }
 
     private var tracks: [Track] = []
@@ -140,14 +141,24 @@ struct StableDetectionFilter {
             let item: Track
             if let oldIndex = best?.0 {
                 available.remove(oldIndex)
-                item = Track(id: tracks[oldIndex].id, box: box, hits: min(50, tracks[oldIndex].hits + 1))
+                item = Track(id: tracks[oldIndex].id, box: box,
+                             hits: min(50, tracks[oldIndex].hits + 1), missedFrames: 0)
             } else {
-                item = Track(id: UUID(), box: box, hits: 1)
+                item = Track(id: UUID(), box: box, hits: 1, missedFrames: 0)
             }
             next.append(item)
             if item.hits >= requiredFrames { verified.append(Verified(index: index, id: item.id)) }
         }
-        // A missing observation resets the track, preferring precision over recall.
+        // Keep identity for up to two missed analyses without rendering or
+        // steering toward an unseen target. If it reappears nearby, regain
+        // the same ID. Never return stale detections.
+        for i in available {
+            let old = tracks[i]
+            if old.missedFrames < 2 {
+                next.append(Track(id: old.id, box: old.box, hits: old.hits,
+                                  missedFrames: old.missedFrames + 1))
+            }
+        }
         tracks = next
         return verified
     }
