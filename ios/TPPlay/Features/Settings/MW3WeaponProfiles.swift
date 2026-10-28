@@ -424,6 +424,8 @@ struct MW3WeaponDetailView: View {
                     MW3WeaponPhoto(weapon: weapon)
                     Text(weapon.category.rawValue + " · " + weapon.generation)
                         .font(.footnote).foregroundStyle(.secondary)
+                    Text("بمجرد فتح السلاح يتم تطبيق ملفه المحفوظ، وحفظ الاختيار، وإضافته تلقائيًا إلى أول خانة متاحة من الست. التعديلات على الشرائط لا تُحفظ إلا بزر الحفظ.")
+                        .font(.footnote)
                     Text("إعدادات مبدئية لحساسية 9 أفقي / 9 رأسي. عدّلها بناءً على سلاحك والإضافات التي تستخدمها.")
                         .font(.footnote)
                 }
@@ -492,6 +494,13 @@ struct MW3WeaponDetailView: View {
         .navigationTitle(weapon.name)
         .navigationBarTitleDisplayMode(.inline)
         .environment(\.layoutDirection, .rightToLeft)
+        .onAppear {
+            // Choosing a weapon applies and saves its existing tuning.
+            // New slider edits remain staged until Save is tapped.
+            let applied = store.apply(weapon)
+            if applied { _ = store.addToFirstEmptySlot(weapon) }
+            message = store.lastMessage
+        }
     }
 
     private func tuningSlider(_ title: String, value: Binding<Double>,
