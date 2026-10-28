@@ -7,6 +7,7 @@ struct TouchLayoutSettingsView: View {
     @State private var namingAction: TouchPresetNamingAction?
     @State private var deleteCandidate: TouchLayoutPreset?
     @State private var editorRequest: TouchLayoutEditorRequest?
+    @State private var saveNotice = ""
 
     var body: some View {
         ZStack {
@@ -14,7 +15,10 @@ struct TouchLayoutSettingsView: View {
 
             VStack(spacing: 0) {
                 TPPageHeader("SETTINGS // TOUCH LAYOUTS") {
-                    Button { dismiss() } label: {
+                    Button {
+                        store.restoreSavedLayouts()
+                        dismiss()
+                    } label: {
                         Image(systemName: "xmark")
                             .font(.system(size: 14, weight: .black))
                             .frame(width: 42, height: 42)
@@ -29,6 +33,28 @@ struct TouchLayoutSettingsView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
                         summaryPanel
+                        HStack {
+                            Button {
+                                saveNotice = store.saveLayouts()
+                                    ? "تم حفظ تخطيطات اللمس بشكل دائم."
+                                    : "تعذر الحفظ."
+                            } label: {
+                                Label("حفظ الإعدادات", systemImage: "square.and.arrow.down")
+                                    .frame(maxWidth: .infinity, minHeight: 48)
+                            }
+                            .buttonStyle(AcidButtonStyle(active: true))
+                            Button("تراجع") {
+                                store.restoreSavedLayouts()
+                                saveNotice = "تم استعادة آخر تخطيط محفوظ."
+                            }
+                            .buttonStyle(AcidButtonStyle())
+                        }
+                        Text(saveNotice.isEmpty
+                             ? (store.hasUnsavedChanges
+                                ? "هناك تعديلات غير محفوظة. اضغط حفظ الإعدادات."
+                                : "تخطيطاتك المحفوظة تبقى بعد إغلاق التطبيق.")
+                             : saveNotice)
+                            .font(.footnote)
 
                         HStack {
                             sectionLabel("CONTROL PRESETS", detail: "\(store.presets.count)")
@@ -241,10 +267,13 @@ private struct TouchLayoutEditorView: View {
 
             VStack(spacing: 0) {
                 HStack(spacing: 8) {
-                    Button { dismiss() } label: {
+                    Button {
+                        store.restoreSavedLayouts()
+                        dismiss()
+                    } label: {
                         HStack(spacing: 7) {
                             Image(systemName: "chevron.left")
-                            Text("DONE")
+                            Text("إلغاء")
                         }
                         .frame(width: 88, height: 44)
                     }
@@ -263,8 +292,15 @@ private struct TouchLayoutEditorView: View {
                     Spacer()
 
                     Button("RESET") { resetToken += 1 }
-                        .frame(width: 86, height: 44)
+                        .frame(width: 75, height: 44)
                         .buttonStyle(AcidButtonStyle())
+                    Button {
+                        if store.saveLayouts() { dismiss() }
+                    } label: {
+                        Label("حفظ", systemImage: "square.and.arrow.down")
+                            .frame(minWidth: 75, minHeight: 44)
+                    }
+                    .buttonStyle(AcidButtonStyle(active: true))
                 }
                 .padding(12)
 
