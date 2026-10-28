@@ -208,7 +208,7 @@ final class RemoteCredentialStore: ObservableObject {
         let basic = Data("\(PSNRemoteAuth.clientID):\(PSNRemoteAuth.clientSecret)".utf8).base64EncodedString()
         request.setValue("Basic " + basic, forHTTPHeaderField: "Authorization")
         request.httpBody = form.percentEncodedQuery?.data(using: .utf8)
-        let json = try await fetchJSON(request)
+        let json = try await fetchJSON(request, stage: "تحويل رمز تسجيل الدخول")
         guard let access = json["access_token"] as? String, !access.isEmpty,
               let refresh = json["refresh_token"] as? String, !refresh.isEmpty,
               let expiry = (json["expires_in"] as? NSNumber)?.doubleValue, expiry > 0 else {
@@ -225,7 +225,7 @@ final class RemoteCredentialStore: ObservableObject {
         request.timeoutInterval = 25
         let basic = Data("\(PSNRemoteAuth.clientID):\(PSNRemoteAuth.clientSecret)".utf8).base64EncodedString()
         request.setValue("Basic " + basic, forHTTPHeaderField: "Authorization")
-        let json = try await fetchJSON(request)
+        let json = try await fetchJSON(request, stage: "قراءة هوية حساب PSN")
         let id = (json["user_id"] as? String) ?? (json["user_id"] as? NSNumber)?.stringValue ?? ""
         let onlineID = json["online_id"] as? String ?? "PSN"
         guard UInt64(id) != nil else {
@@ -242,7 +242,7 @@ final class RemoteCredentialStore: ObservableObject {
         request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("en-US", forHTTPHeaderField: "Accept-Language")
-        let json = try await fetchJSON(request)
+        let json = try await fetchJSON(request, stage: "جلب أجهزة PS5")
         guard let list = json["clients"] as? [[String: Any]] else {
             throw RemoteSetupError.message("تعذر قراءة قائمة الأجهزة من PSN.")
         }
@@ -259,7 +259,7 @@ final class RemoteCredentialStore: ObservableObject {
         return result
     }
 
-    private func fetchJSON(_ request: URLRequest) async throws -> [String: Any] {
+    private func fetchJSON(_ request: URLRequest, stage: String) async throws -> [String: Any] {
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let status = (response as? HTTPURLResponse)?.statusCode else {
             throw RemoteSetupError.message("فشل الاتصال بخادم PlayStation.")
@@ -274,21 +274,21 @@ final class RemoteCredentialStore: ObservableObject {
                 ? reason : nil
             if status == 400, reason == "invalid_grant" {
                 throw RemoteSetupError.message(
-                    "انتهت صلاحية رابط Sony أو استُخدم رمز الدخول سابقًا (HTTP 400 / invalid_grant). افتح تسجيل دخول جديد وانسخ الرابط الجديد فورًا."
+                    "فشلت مرحلة \(stage): انتهت صلاحية رابط Sony أو استُخدم رمز الدخول سابقًا (HTTP 400 / invalid_grant). افتح تسجيل دخول جديدًا وانسخ الرابط الجديد فورًا."
                 )
             }
             if status == 400, reason == "invalid_client" {
                 throw RemoteSetupError.message(
-                    "رفض PSN معرّف عميل Remote Play (HTTP 400 / invalid_client). جرّب تحديث التطبيق."
+                    "فشلت مرحلة \(stage): رفض PSN معرّف عميل Remote Play (HTTP 400 / invalid_client). جرّب تحديث التطبيق."
                 )
             }
             if status == 400, reason == "invalid_scope" {
                 throw RemoteSetupError.message(
-                    "رفض PSN نطاق صلاحيات الاتصال البعيد (HTTP 400 / invalid_scope)."
+                    "فشلت مرحلة \(stage): رفض PSN نطاق صلاحيات الاتصال البعيد (HTTP 400 / invalid_scope)."
                 )
             }
             throw RemoteSetupError.message(
-                "رفض PSN طلب الاتصال (HTTP \(status)\(safeReason.map { " / " + $0 } ?? "")). إذا كانت هذه محاولة ربط، افتح تسجيل دخول Sony جديدًا، ولا تعِد استخدام الرابط القديم."
+                "فشلت مرحلة \(stage): رفض PSN الطلب (HTTP \(status)\(safeReason.map { " / " + $0 } ?? "")). إذا كانت هذه محاولة ربط، افتح تسجيل دخول Sony جديدًا، ولا تعِد استخدام الرابط القديم."
             )
         }
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
