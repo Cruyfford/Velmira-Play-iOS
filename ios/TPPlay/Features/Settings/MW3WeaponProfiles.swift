@@ -45,7 +45,8 @@ struct MW3Weapon: Identifiable, Hashable {
         let base = generation == "MWIII" ? "mw3-2023" : "mw2-2022"
         let slug = name.lowercased()
             .replacingOccurrences(of: " ", with: "-")
-            .replacingOccurrences(of: ".", with: "")
+            .replacingOccurrences(of: ".", with: "-")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
         return URL(string: "https://bosslobbies.com/wp-content/themes/boss-child/assets/weapons/\(base)/full/\(slug).webp")
     }
 
