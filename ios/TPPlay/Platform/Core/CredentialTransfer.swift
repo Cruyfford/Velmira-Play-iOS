@@ -205,6 +205,8 @@ final class RemoteCredentialStore: ObservableObject {
         request.timeoutInterval = 30
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.setValue(PSNRemoteAuth.userAgent, forHTTPHeaderField: "User-Agent")
+        let basic = Data("\(PSNRemoteAuth.clientID):\(PSNRemoteAuth.clientSecret)".utf8).base64EncodedString()
+        request.setValue("Basic " + basic, forHTTPHeaderField: "Authorization")
         request.httpBody = form.percentEncodedQuery?.data(using: .utf8)
         let json = try await fetchJSON(request)
         guard let access = json["access_token"] as? String, !access.isEmpty,
@@ -336,6 +338,8 @@ final class RemoteCredentialStore: ObservableObject {
         request.timeoutInterval = 30
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.setValue(PSNRemoteAuth.userAgent, forHTTPHeaderField: "User-Agent")
+        let basic = Data("\(PSNRemoteAuth.clientID):\(PSNRemoteAuth.clientSecret)".utf8).base64EncodedString()
+        request.setValue("Basic " + basic, forHTTPHeaderField: "Authorization")
         request.httpBody = body.percentEncodedQuery?.data(using: .utf8)
 
         let data: Data
@@ -388,7 +392,9 @@ private enum RemoteSetupError: LocalizedError {
 }
 
 private enum PSNRemoteAuth {
-    static let tokenURL = URL(string: "https://ca.account.sony.com/api/authz/v3/oauth/token")!
+    // This OAuth client is the legacy Remote Play client. Its code and
+    // refresh-token grants use the matching 2.0 endpoint.
+    static let tokenURL = URL(string: "https://auth.api.sonyentertainmentnetwork.com/2.0/oauth/token")!
     static let clientID = "ba495a24-818c-472b-b12d-ff231c1b5745"
     static let clientSecret = "mvaiZkRsAsI1IBkY"
     static let redirectURI = "https://remoteplay.dl.playstation.net/remoteplay/redirect"
