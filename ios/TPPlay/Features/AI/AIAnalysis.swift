@@ -403,8 +403,12 @@ final class MatchRoster: ObservableObject {
             if confirmed.side == .opponent, let color = UIColor(hexRGB: confirmed.hex) {
                 // Select marker hue only. Never arm assistance or initiate controller actions.
                 let ai = AIAnalysisState.shared
-                if !ai.colorMode { ai.colorMode = true }
-                if abs(ai.colorHue - color.hueValue) > 0.008 { ai.colorHue = color.hueValue }
+                // Choose the opponent hue only once. Recalibrating every OCR
+                // frame would continuously reset the live detection tracks.
+                if !ai.colorMode {
+                    ai.colorHue = color.hueValue
+                    ai.colorMode = true
+                }
             }
         }
     }
@@ -608,7 +612,7 @@ final class AutoRosterScanner: @unchecked Sendable {
 
     private let lock = NSLock()
     private let queue = DispatchQueue(label: "app.velmira.roster.ocr", qos: .utility)
-    private var enabled = true
+    private var enabled = UserDefaults.standard.object(forKey: "velmira.roster.autoscan.v1") as? Bool ?? true
     private var paused = true
     private var busy = false
     private var lastRun: TimeInterval = 0
