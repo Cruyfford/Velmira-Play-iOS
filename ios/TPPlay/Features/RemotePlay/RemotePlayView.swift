@@ -9,6 +9,8 @@ struct RemotePlayView: View {
     @ObservedObject private var touchLayouts = TouchLayoutStore.shared
     @ObservedObject private var aiAnalysis = AIAnalysisState.shared
     @ObservedObject private var assistance = AssistanceState.shared
+    @ObservedObject private var weaponStore = MW3WeaponStore.shared
+    @State private var showingWeaponLibrary = false
     @State private var showMetrics = UserDefaults.standard.object(forKey: "velmira.showMetrics.compact.v2") as? Bool ?? false
     @State private var savedStreamNotice = ""
     @State private var calibrationShot: CalibrationShot?
@@ -125,6 +127,19 @@ struct RemotePlayView: View {
                 .overlay { Rectangle().stroke(TPPlayTheme.violet, lineWidth: 1) }
                 .zIndex(10)
             }
+        }
+        .sheet(isPresented: $showingWeaponLibrary, onDismiss: {
+            if scenePhase == .active { session.resumeAssistance() }
+        }) {
+            NavigationStack {
+                MW3WeaponCatalogView()
+                    .toolbar {
+                        ToolbarItem(placement: .topBarLeading) {
+                            Button("إغلاق") { showingWeaponLibrary = false }
+                        }
+                    }
+            }
+            .preferredColorScheme(.dark)
         }
         .sheet(item: $calibrationShot, onDismiss: {
             if scenePhase == .active { session.resumeAssistance() }
@@ -268,6 +283,41 @@ struct RemotePlayView: View {
                         .overlay(Capsule().stroke(TPPlayTheme.accent.opacity(0.45), lineWidth: 1))
                 }
                 .accessibilityLabel("أدوات البث والإعدادات")
+
+                Menu {
+                    ForEach(0..<6, id: \.self) { index in
+                        if let gun = weaponStore.weapon(in: index) {
+                            Button {
+                                let success = weaponStore.apply(gun)
+                                savedStreamNotice = weaponStore.lastMessage
+                                if !success {
+                                    session.stopAssistanceNow()
+                                }
+                            } label: {
+                                Label("\(index + 1) — \(gun.name)",
+                                      systemImage: weaponStore.selectedID == gun.id
+                                      ? "checkmark.circle.fill" : "circle")
+                            }
+                        } else {
+                            Button("\(index + 1) — خانة فارغة") {
+                                session.suspendAssistance(reason: "فتح مكتبة الأسلحة")
+                                showingWeaponLibrary = true
+                            }
+                        }
+                    }
+                    Divider()
+                    Button("إضافة أو ضبط الأسلحة", systemImage: "plus.circle") {
+                        session.suspendAssistance(reason: "فتح مكتبة الأسلحة")
+                        showingWeaponLibrary = true
+                    }
+                } label: {
+                    Label("ضبط السلاح", systemImage: "scope")
+                        .padding(.horizontal, 12)
+                        .frame(minHeight: 42)
+                        .background(.black.opacity(0.66), in: Capsule())
+                        .overlay(Capsule().stroke(TPPlayTheme.accent.opacity(0.45), lineWidth: 1))
+                }
+                .accessibilityLabel("اختيار سريع من ستة أسلحة MW3")
 
                 Spacer(minLength: 4)
 
