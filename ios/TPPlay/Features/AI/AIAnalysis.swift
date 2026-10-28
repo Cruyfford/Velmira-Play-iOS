@@ -472,16 +472,8 @@ final class MatchRoster: ObservableObject {
                                         nameColorHEX: confirmed.hex, isConfirmedByUser: false))
             }
             autoStatus = "رُصد \(name) بلون \(candidate.side == .opponent ? "أحمر" : "أزرق") — تصنيف تلقائي قابل للتصحيح."
-            if confirmed.side == .opponent, let color = UIColor(hexRGB: confirmed.hex) {
-                // Select marker hue only. Never arm assistance or initiate controller actions.
-                let ai = AIAnalysisState.shared
-                // Choose the opponent hue only once. Recalibrating every OCR
-                // frame would continuously reset the live detection tracks.
-                if !ai.colorMode {
-                    ai.colorHue = color.hueValue
-                    ai.colorMode = true
-                }
-            }
+            // Automatic OCR only updates the roster. It must not overwrite
+            // a user's saved marker hue or enable tracking without Save.
         }
     }
 
