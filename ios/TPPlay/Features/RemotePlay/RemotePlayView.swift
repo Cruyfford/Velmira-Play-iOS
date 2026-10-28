@@ -216,6 +216,7 @@ struct RemotePlayView: View {
             }
         }
         .onAppear {
+            TPPlayOrientation.set(.landscape)
             AIFrameAnalyzer.shared.setPaused(false)
             session.resumeAssistance()
             let controllers = GCController.controllers()
@@ -237,12 +238,14 @@ struct RemotePlayView: View {
             updateControllerPresence(GCController.controllers())
         }
         .onDisappear {
+            TPPlayOrientation.set(.portrait)
             GCController.stopWirelessControllerDiscovery()
             UIApplication.shared.isIdleTimerDisabled = false
             session.stop()
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
+                TPPlayOrientation.set(.landscape)
                 AIFrameAnalyzer.shared.setPaused(false)
                 if calibrationShot == nil && playerNameShot == nil { session.resumeAssistance() }
                 UIApplication.shared.isIdleTimerDisabled = true
