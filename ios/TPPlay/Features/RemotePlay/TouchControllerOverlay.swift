@@ -837,30 +837,42 @@ final class TPVirtualControllerView: UIView, UIGestureRecognizerDelegate {
         let safe = safeAreaInsets
         let top = safe.top + 8
         let bottom = h - safe.bottom
+        // Landscape-first layout with compact, thumb-friendly edge clusters.
+        // User-customized positions in the selected preset still take precedence.
+        let scale = max(0.72, min(1.0, h / 430))
+        let leftPadX = safe.left + min(134, max(112, w * 0.135))
+        let rightPadX = w - safe.right - min(134, max(112, w * 0.135))
+        let padY = bottom - 91 * scale
+        let distance = 48 * scale
+        let face = CGSize(width: 67 * scale, height: 67 * scale)
+        let shoulder = CGSize(width: 79 * scale, height: 47 * scale)
+        let smaller = CGSize(width: 59 * scale, height: 48 * scale)
 
         leftStick.frame = CGRect(x: 0, y: 0, width: w / 2, height: h)
         rightLook.frame = CGRect(x: w / 2, y: 0, width: w / 2, height: h)
 
-        touchpad.bounds = CGRect(x: 0, y: 0, width: 168, height: 54)
-        touchpad.center = CGPoint(x: w / 2, y: top + 34)
+        touchpad.bounds = CGRect(x: 0, y: 0, width: 112 * scale, height: 42 * scale)
+        touchpad.center = CGPoint(x: w / 2, y: top + 115 * scale)
 
         let defaults: [String: (CGPoint, CGSize)] = [
-            "l2": (CGPoint(x: safe.left + 42, y: top + 78), CGSize(width: 76, height: 52)),
-            "l1": (CGPoint(x: safe.left + 105, y: top + 106), CGSize(width: 76, height: 54)),
-            "share": (CGPoint(x: w / 2 - 112, y: top + 32), CGSize(width: 72, height: 48)),
-            "options": (CGPoint(x: w / 2 + 112, y: top + 32), CGSize(width: 80, height: 48)),
-            "r1": (CGPoint(x: w - safe.right - 105, y: top + 106), CGSize(width: 76, height: 54)),
-            "r2": (CGPoint(x: w - safe.right - 42, y: top + 78), CGSize(width: 76, height: 52)),
-            "l3": (CGPoint(x: safe.left + 42, y: bottom - 34), CGSize(width: 68, height: 58)),
-            "r3": (CGPoint(x: w - safe.right - 42, y: bottom - 34), CGSize(width: 68, height: 58)),
-            "dpadUp": (CGPoint(x: safe.left + 126, y: bottom - 188), CGSize(width: 76, height: 76)),
-            "dpadLeft": (CGPoint(x: safe.left + 72, y: bottom - 134), CGSize(width: 76, height: 76)),
-            "dpadRight": (CGPoint(x: safe.left + 180, y: bottom - 134), CGSize(width: 76, height: 76)),
-            "dpadDown": (CGPoint(x: safe.left + 126, y: bottom - 80), CGSize(width: 76, height: 76)),
-            "triangle": (CGPoint(x: w - safe.right - 126, y: bottom - 188), CGSize(width: 76, height: 76)),
-            "square": (CGPoint(x: w - safe.right - 180, y: bottom - 134), CGSize(width: 76, height: 76)),
-            "circle": (CGPoint(x: w - safe.right - 72, y: bottom - 134), CGSize(width: 76, height: 76)),
-            "cross": (CGPoint(x: w - safe.right - 126, y: bottom - 80), CGSize(width: 76, height: 76))
+            "l2": (CGPoint(x: safe.left + 61 * scale, y: top + 103 * scale), shoulder),
+            "l1": (CGPoint(x: safe.left + 61 * scale, y: top + 157 * scale), shoulder),
+            "r2": (CGPoint(x: w - safe.right - 61 * scale, y: top + 103 * scale), shoulder),
+            "r1": (CGPoint(x: w - safe.right - 61 * scale, y: top + 157 * scale), shoulder),
+            "share": (CGPoint(x: w / 2 - 108 * scale, y: top + 115 * scale),
+                      CGSize(width: 76 * scale, height: 40 * scale)),
+            "options": (CGPoint(x: w / 2 + 108 * scale, y: top + 115 * scale),
+                        CGSize(width: 82 * scale, height: 40 * scale)),
+            "l3": (CGPoint(x: safe.left + 38 * scale, y: bottom - 28 * scale), smaller),
+            "r3": (CGPoint(x: w - safe.right - 38 * scale, y: bottom - 28 * scale), smaller),
+            "dpadUp": (CGPoint(x: leftPadX, y: padY - distance), face),
+            "dpadLeft": (CGPoint(x: leftPadX - distance, y: padY), face),
+            "dpadRight": (CGPoint(x: leftPadX + distance, y: padY), face),
+            "dpadDown": (CGPoint(x: leftPadX, y: padY + distance), face),
+            "triangle": (CGPoint(x: rightPadX, y: padY - distance), face),
+            "square": (CGPoint(x: rightPadX - distance, y: padY), face),
+            "circle": (CGPoint(x: rightPadX + distance, y: padY), face),
+            "cross": (CGPoint(x: rightPadX, y: padY + distance), face)
         ]
 
         applyLayout(to: touchpad, key: touchpad.layoutKey, defaultCenter: touchpad.center)
@@ -871,12 +883,13 @@ final class TPVirtualControllerView: UIView, UIGestureRecognizerDelegate {
             applyLayout(to: button, key: button.layoutKey, defaultCenter: item.0)
         }
 
-        let actionSpacing: CGFloat = 86
+        let actionSpacing: CGFloat = 76 * scale
         let actionStart = w / 2 - CGFloat(max(0, touchpadActionButtons.count - 1)) * actionSpacing / 2
         for (index, pair) in touchpadActionButtons.enumerated() {
             let button = pair.1
-            let defaultCenter = CGPoint(x: actionStart + CGFloat(index) * actionSpacing, y: top + 42)
-            button.bounds = CGRect(x: 0, y: 0, width: 82, height: 54)
+            let defaultCenter = CGPoint(x: actionStart + CGFloat(index) * actionSpacing,
+                                        y: top + 164 * scale)
+            button.bounds = CGRect(x: 0, y: 0, width: 78 * scale, height: 44 * scale)
             button.center = defaultCenter
             applyLayout(to: button, key: pair.0.layoutKey, defaultCenter: defaultCenter)
         }
