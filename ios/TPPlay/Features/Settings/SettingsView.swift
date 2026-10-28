@@ -1,8 +1,267 @@
 import AuthenticationServices
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
+
+
+private struct VelmiraPortableAI: Codable {
+    var colorMode: Bool
+    var hybridMode: Bool
+    var adaptiveBodyMarker: Bool
+    var precisionMode: Bool
+    var colorHue: Double
+    var colorTolerance: Double
+    var enabled: Bool
+    var threshold: Double
+    var rate: Double
+}
+
+private struct VelmiraPortableStream: Codable {
+    var resolution: Int
+    var fps: Int
+    var bitrate: Int
+}
+
+private struct VelmiraPortableTouch: Codable {
+    var presets: [TouchLayoutPreset]
+    var activePresetID: UUID
+}
+
+/// Shareable user preferences only. No PSN credentials, connection host,
+/// console pairing, Keychain values, account information, or private roster.
+private struct VelmiraSettingsPackage: Codable {
+    var format: String
+    var version: Int
+    var exportedAt: String
+    var assistance: AssistanceConfiguration
+    var ai: VelmiraPortableAI
+    var stream: VelmiraPortableStream
+    var touch: VelmiraPortableTouch
+    var gameProfiles: [GameProfile]
+    var showMetrics: Bool
+    var autoScanEnabled: Bool
+}
+
+private enum VelmiraImportError: LocalizedError {
+    case wrongFormat
+    case unsupportedVersion
+    case invalidValue(String)
+    case tooLarge
+    case cannotRead
+    case cannotSave
+
+    var errorDescription: String? {
+        switch self {
+        case .wrongFormat: "الملف ليس ملف إعدادات Velmira Play صالحًا."
+        case .unsupportedVersion: "إصدار ملف الإعدادات غير مدعوم في هذه النسخة."
+        case .invalidValue(let field): "قيمة غير صالحة في الملف: \(field). لم يتم تغيير الإعدادات."
+        case .tooLarge: "ملف الإعدادات أكبر من الحد المسموح (1 ميجابايت)."
+        case .cannotRead: "تعذر قراءة ملف الإعدادات. اختر ملف JSON صادرًا من Velmira Play."
+        case .cannotSave: "تعذر حفظ الإعدادات المستوردة."
+        }
+    }
+}
+
+private struct VelmiraSettingsDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.json] }
+    var data: Data
+
+    init(data: Data) { self.data = data }
+
+    init(configuration: ReadConfiguration) throws {
+        guard let data = configuration.file.regularFileContents else {
+            throw VelmiraImportError.cannotRead
+        }
+        self.data = data
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
+    }
+}
+
+@MainActor
+private enum VelmiraSettingsTransfer {
+    static func exportCurrent() throws -> VelmiraSettingsDocument {
+        let ai = AIAnalysisState.shared
+        let defaults = UserDefaults.standard
+        let touch = TouchLayoutStore.shared
+        let package = VelmiraSettingsPackage(
+            format: "velmira-play-settings",
+            version: 1,
+            exportedAt: ISO8601DateFormatter().string(from: Date()),
+            assistance: AssistanceState.shared.configuration,
+            ai: VelmiraPortableAI(
+                colorMode: ai.colorMode, hybridMode: ai.hybridMode,
+                adaptiveBodyMarker: ai.adaptiveBodyMarker, precisionMode: ai.precisionMode,
+                colorHue: ai.colorHue, colorTolerance: ai.colorTolerance,
+                enabled: ai.enabled, threshold: ai.threshold, rate: ai.rate),
+            stream: VelmiraPortableStream(
+                resolution: defaults.object(forKey: "streamResolution") as? Int ?? 1080,
+                fps: defaults.object(forKey: "streamFPS") as? Int ?? 60,
+                bitrate: defaults.object(forKey: "streamBitrate") as? Int ?? 15_000),
+            touch: VelmiraPortableTouch(
+                presets: touch.presets, activePresetID: touch.activePresetID),
+            gameProfiles: GameProfiles.shared.profiles,
+            showMetrics: defaults.object(forKey: "velmira.showMetrics.compact.v2") as? Bool ?? false,
+            autoScanEnabled: MatchRoster.shared.autoScanEnabled)
+        try validate(package)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return VelmiraSettingsDocument(data: try encoder.encode(package))
+    }
+
+    static func importFile(at url: URL) throws {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        if let bytes = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+           bytes > 1_048_576 {
+            throw VelmiraImportError.tooLarge
+        }
+        guard let data = try? Data(contentsOf: url), data.count <= 1_048_576 else {
+            throw VelmiraImportError.cannotRead
+        }
+        let decoder = JSONDecoder()
+        guard let profile = try? decoder.decode(VelmiraSettingsPackage.self, from: data) else {
+            throw VelmiraImportError.wrongFormat
+        }
+        try validate(profile)
+        // Validate and encode everything *before* changing any saved preferences.
+        let encoder = JSONEncoder()
+        let touchData = try encoder.encode(profile.touch)
+        let profilesData = try encoder.encode(profile.gameProfiles)
+
+        let assistance = AssistanceState.shared
+        let ai = AIAnalysisState.shared
+        let defaults = UserDefaults.standard
+        // Never arm controller motion from an imported document.
+        assistance.emergencyStop(reason: "تم تحميل إعدادات جديدة؛ التفعيل يدوي")
+        GameProfiles.shared.discardUnsavedProfile()
+        assistance.configuration = profile.assistance
+        ai.colorMode = profile.ai.colorMode
+        ai.hybridMode = profile.ai.hybridMode
+        ai.adaptiveBodyMarker = profile.ai.adaptiveBodyMarker
+        ai.precisionMode = profile.ai.precisionMode
+        ai.colorHue = profile.ai.colorHue
+        ai.colorTolerance = profile.ai.colorTolerance
+        ai.threshold = profile.ai.threshold
+        ai.rate = profile.ai.rate
+        ai.enabled = profile.ai.enabled
+        guard assistance.saveSettings(), ai.saveSettings() else {
+            throw VelmiraImportError.cannotSave
+        }
+        defaults.set(profile.stream.resolution, forKey: "streamResolution")
+        defaults.set(profile.stream.fps, forKey: "streamFPS")
+        defaults.set(profile.stream.bitrate, forKey: "streamBitrate")
+        defaults.set(profile.showMetrics, forKey: "velmira.showMetrics.compact.v2")
+        defaults.set(touchData, forKey: "tpplay.touchLayouts.v2")
+        TouchLayoutStore.shared.restoreSavedLayouts()
+        defaults.set(profilesData, forKey: "velmira.gameProfiles.v1")
+        GameProfiles.shared.profiles = profile.gameProfiles
+        MatchRoster.shared.autoScanEnabled = profile.autoScanEnabled
+        MatchRoster.shared.saveAutoScanSetting()
+    }
+
+    private static func check(_ value: Double, _ range: ClosedRange<Double>,
+                              _ name: String) throws {
+        guard value.isFinite, range.contains(value) else {
+            throw VelmiraImportError.invalidValue(name)
+        }
+    }
+
+    private static func checkAssistance(_ c: AssistanceConfiguration) throws {
+        try check(c.radius, 0.05...0.5, "نطاق التتبع")
+        try check(c.strength, 0.1...5, "قوة التصحيح")
+        try check(c.maxStick, 0.02...0.8, "حد حركة العصا")
+        try check(c.deadZone, 0...0.2, "المنطقة الميتة")
+        try check(c.response, 0.02...0.5, "تنعيم التتبع")
+        try check(c.manualOverride, 0.1...1, "أولوية التحكم اليدوي")
+        try check(c.staleAfter, 0.1...0.8, "صلاحية إطار الفيديو")
+        try check(c.lossDelay, 0.15...2, "مهلة فقد الهدف")
+        try check(c.pointX, 0...1, "موضع الجسم X")
+        try check(c.pointY, 0...1, "موضع الجسم Y")
+        try check(c.colorOffsetX, -0.3...0.3, "إزاحة اللون X")
+        try check(c.colorOffsetY, -0.1...0.4, "إزاحة اللون Y")
+        try check(c.scopeDelay, 0.05...2, "تأخير السنايبر")
+        try check(c.shotDuration, 0.03...0.3, "مدة الطلقة")
+        try check(c.switchDelay, 0.03...1, "تأخير تبديل السلاح")
+        try check(c.switchDuration, 0.03...0.3, "مدة تبديل السلاح")
+        try check(c.recoilX, -0.3...0.3, "الارتداد X")
+        try check(c.recoilY, -0.3...0.3, "الارتداد Y")
+    }
+
+    private static func validate(_ p: VelmiraSettingsPackage) throws {
+        guard p.format == "velmira-play-settings" else {
+            throw VelmiraImportError.wrongFormat
+        }
+        guard p.version == 1 else {
+            throw VelmiraImportError.unsupportedVersion
+        }
+        try checkAssistance(p.assistance)
+        try check(p.ai.colorHue, 0...1, "لون العلامة")
+        try check(p.ai.colorTolerance, 0.01...0.15, "سماحية اللون")
+        try check(p.ai.threshold, 0.2...0.95, "ثقة الذكاء الاصطناعي")
+        guard [3.0, 5.0, 8.0].contains(p.ai.rate) else {
+            throw VelmiraImportError.invalidValue("معدل التحليل")
+        }
+        guard [720, 1080].contains(p.stream.resolution),
+              [30, 60].contains(p.stream.fps),
+              (2_000...100_000).contains(p.stream.bitrate) else {
+            throw VelmiraImportError.invalidValue("جودة البث")
+        }
+        let presets = p.touch.presets
+        guard (1...40).contains(presets.count),
+              Set(presets.map(\.id)).count == presets.count,
+              presets.contains(where: { $0.id == p.touch.activePresetID }) else {
+            throw VelmiraImportError.invalidValue("تخطيطات أزرار اللمس")
+        }
+        for preset in presets {
+            guard !preset.name.isEmpty, preset.name.count <= 64,
+                  preset.layout.centers.count <= 80, preset.layout.scales.count <= 80,
+                  (preset.layout.touchpadActions?.count ?? 0) <= 4 else {
+                throw VelmiraImportError.invalidValue("تخطيط الأزرار")
+            }
+            for point in preset.layout.centers.values {
+                try check(point.x, 0...1, "موضع زر X")
+                try check(point.y, 0...1, "موضع زر Y")
+            }
+            for size in preset.layout.scales.values {
+                try check(size, 0.55...1.7, "حجم زر اللمس")
+            }
+            if let left = preset.layout.leftStickSensitivity {
+                try check(left, 0.5...3, "حساسية العصا اليسرى")
+            }
+            if let right = preset.layout.rightStickSensitivity {
+                try check(right, 0.5...3, "حساسية العصا اليمنى")
+            }
+        }
+        guard p.gameProfiles.count <= 40,
+              Set(p.gameProfiles.map(\.id)).count == p.gameProfiles.count else {
+            throw VelmiraImportError.invalidValue("ملفات الألعاب")
+        }
+        for game in p.gameProfiles {
+            guard !game.name.isEmpty, game.name.count <= 80,
+                  [720, 1080].contains(game.resolution),
+                  [30, 60].contains(game.fps),
+                  (2_000...100_000).contains(game.bitrate),
+                  [3.0, 5.0, 8.0].contains(game.rate) else {
+                throw VelmiraImportError.invalidValue("ملف إعدادات اللعبة")
+            }
+            try checkAssistance(game.assistance)
+            try check(game.hue, 0...1, "لون ملف اللعبة")
+            try check(game.tolerance, 0.01...0.15, "سماحية ملف اللعبة")
+            try check(game.threshold, 0.2...0.95, "ثقة ملف اللعبة")
+        }
+    }
+}
 
 struct HomeView: View {
+    @State private var showImportPicker = false
+    @State private var showExportPicker = false
+    @State private var exportDocument: VelmiraSettingsDocument?
+    @State private var settingsTransferNotice = ""
+    @State private var settingsTransferFailed = false
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -25,6 +284,39 @@ struct HomeView: View {
                     } label: {
                         settingsCard("الاتصال البعيد عبر 5G", subtitle: "تسجيل PSN وربط جهاز PS5 عبر الإنترنت", icon: "globe")
                     }
+                    VelmiraSection("مشاركة وتحميل الإعدادات") {
+                        Text("استورد جميع إعدادات التطبيق من ملف JSON، أو صدّر إعداداتك وأرسلها إلى شخص آخر. الاستيراد يحفظها مباشرة بعد التحقق من الملف.")
+                            .font(.footnote)
+                        Button {
+                            showImportPicker = true
+                        } label: {
+                            Label("لود الإعدادات — اختيار ملف من الجهاز", systemImage: "square.and.arrow.down.on.square")
+                                .frame(maxWidth: .infinity, minHeight: 52)
+                        }
+                        .buttonStyle(AcidButtonStyle(active: true))
+                        Button {
+                            do {
+                                exportDocument = try VelmiraSettingsTransfer.exportCurrent()
+                                settingsTransferNotice = ""
+                                showExportPicker = true
+                            } catch {
+                                settingsTransferFailed = true
+                                settingsTransferNotice = error.localizedDescription
+                            }
+                        } label: {
+                            Label("تصدير الإعدادات — ملف للمشاركة", systemImage: "square.and.arrow.up")
+                                .frame(maxWidth: .infinity, minHeight: 48)
+                        }
+                        .buttonStyle(AcidButtonStyle())
+                        Text("الصيغة: Velmira-Settings.json — يشمل التحكم والذكاء الاصطناعي وموضع الجسم والبث واللمس وملفات الألعاب. لا يشمل حساب PSN أو بيانات اتصال الأجهزة.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                        if !settingsTransferNotice.isEmpty {
+                            Text(settingsTransferNotice)
+                                .font(.footnote)
+                                .foregroundStyle(settingsTransferFailed ? Color.orange : Color.green)
+                        }
+                    }
                     VelmiraSection {
                         HStack {
                             Image(systemName: "lock.shield").foregroundStyle(TPPlayTheme.accent)
@@ -36,6 +328,33 @@ struct HomeView: View {
             }
             .background(TPPlayTheme.canvas)
             .toolbar(.hidden, for: .navigationBar)
+            .fileImporter(isPresented: $showImportPicker, allowedContentTypes: [.json]) { result in
+                switch result {
+                case .success(let url):
+                    do {
+                        try VelmiraSettingsTransfer.importFile(at: url)
+                        settingsTransferFailed = false
+                        settingsTransferNotice = "تم تحميل الإعدادات وحفظها بنجاح. التفعيل اليدوي للمساعدة يبقى متوقفًا."
+                    } catch {
+                        settingsTransferFailed = true
+                        settingsTransferNotice = error.localizedDescription
+                    }
+                case .failure(let error):
+                    settingsTransferFailed = true
+                    settingsTransferNotice = error.localizedDescription
+                }
+            }
+            .fileExporter(isPresented: $showExportPicker, document: exportDocument,
+                          contentType: .json, defaultFilename: "Velmira-Settings") { result in
+                switch result {
+                case .success:
+                    settingsTransferFailed = false
+                    settingsTransferNotice = "تم تصدير ملف الإعدادات. يمكنك مشاركته عبر تطبيق الملفات."
+                case .failure(let error):
+                    settingsTransferFailed = true
+                    settingsTransferNotice = error.localizedDescription
+                }
+            }
         }
         .environment(\.layoutDirection, .rightToLeft)
     }
