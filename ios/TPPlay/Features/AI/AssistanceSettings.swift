@@ -201,6 +201,7 @@ struct AssistanceSettings: View {
                     valueSlider("مدة ضغط R2", value: $model.configuration.shotDuration, range: 0.03...0.3)
                     Toggle("Silent Shot: طلقة ثم تبديل السلاح", isOn: $model.configuration.silentShot)
                     valueSlider("تأخير تبديل السلاح", value: $model.configuration.switchDelay, range: 0.03...1)
+                    valueSlider("مدة ضغط زر المثلث", value: $model.configuration.switchDuration, range: 0.03...0.3)
                     Text("التبديل يضغط مثلث وفق ترتيب أزرار اللعبة الافتراضي. الاسم هنا يعني تسلسل أزرار فقط، ولا يضمن إخفاء صوت الطلقة. ترك L2 يلغي التسلسل. الماكرو لا ينتظر كشف هدف.").font(.footnote)
                 }
                 VelmiraSection("تعويض الارتداد — L2 مع R2") {
