@@ -48,68 +48,7 @@ struct RemotePlayView: View {
             AIAnalysisOverlay().ignoresSafeArea()
 
             controls
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 8) {
-                    Button {
-                        exitFromStream()
-                    } label: {
-                        Label("خروج من البث", systemImage: "arrow.uturn.backward")
-                            .font(.system(size: 14, weight: .bold))
-                            .padding(.horizontal, 12)
-                            .frame(minHeight: 44)
-                            .background(Color(red: 0.52, green: 0.14, blue: 0.18), in: Capsule())
-                    }
-                    .accessibilityLabel("الخروج من البث والعودة إلى صفحة الأجهزة")
-                    Button {
-                        session.suspendAssistance(preserveActivation: true)
-                        if let image = session.calibrationFrames.image() {
-                            calibrationShot = CalibrationShot(image: image)
-                        } else {
-                            calibrationError = true
-                            session.resumeAssistance()
-                        }
-                    } label: { Label("معايرة", systemImage: "eyedropper") }
-                    .padding(10).background(.black.opacity(0.7), in: Capsule())
-                    Button {
-                        session.suspendAssistance(preserveActivation: true)
-                        if let image = session.calibrationFrames.image() {
-                            playerNameShot = CalibrationShot(image: image)
-                        } else {
-                            calibrationError = true
-                            session.resumeAssistance()
-                        }
-                    } label: {
-                        Label("اسم خصم", systemImage: "text.viewfinder")
-                    }
-                    .padding(10).background(.black.opacity(0.7), in: Capsule())
-                    .accessibilityLabel("اختر اسم لاعب ولونه من صورة البث")
-                    Button { showMetrics.toggle() } label: {
-                        Image(systemName: "chart.bar.xaxis").padding(10)
-                    }.background(.black.opacity(0.7), in: Capsule())
-                    .accessibilityLabel("إظهار أو إخفاء لوحة الأداء")
-                    Spacer(minLength: 0)
-                    if assistance.armed {
-                        Text("المساعدة مفعّلة")
-                            .font(.caption2).padding(8).background(.black.opacity(0.7), in: Capsule())
-                    } else {
-                        Button("تشغيل") { assistance.armed = true }
-                            .padding(12).background(.green.opacity(0.8), in: Capsule())
-                            .accessibilityLabel("تفعيل المساعدة يدويًا")
-                    }
-                    Button("إيقاف") { session.stopAssistanceNow() }
-                        .padding(12).background(.red.opacity(0.9), in: Capsule())
-                        .accessibilityLabel("إيقاف جميع المساعدات فوراً")
-                }.font(.caption.bold()).foregroundStyle(.white)
-                if !assistance.armed, let reason = assistance.lastStopReason {
-                    Text("توقفت المساعدة: \(reason)")
-                        .font(.caption2)
-                        .foregroundStyle(.white)
-                        .padding(7)
-                        .background(.black.opacity(0.7), in: Capsule())
-                }
-                if showMetrics { performancePanel }
-                Spacer()
-            }.padding().zIndex(10)
+            streamToolbar
 
             if showsExitConfirmation {
                 Color.black.opacity(0.74)
@@ -264,6 +203,114 @@ struct RemotePlayView: View {
     }
 
 
+    // A narrow always-accessible bar replaces the wide row that used to
+    // overlap the PS5 touchpad and shoulder controls in landscape mode.
+    private var streamToolbar: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Button(action: exitFromStream) {
+                    Label("خروج", systemImage: "arrow.uturn.backward")
+                        .padding(.horizontal, 13)
+                        .frame(minHeight: 42)
+                        .background(TPPlayTheme.danger.opacity(0.84), in: Capsule())
+                }
+                .accessibilityLabel("الخروج من البث والعودة إلى الأجهزة")
+
+                Menu {
+                    Button("معايرة اللون", systemImage: "eyedropper") {
+                        openCalibrationCapture()
+                    }
+                    Button("اسم خصم", systemImage: "text.viewfinder") {
+                        openOpponentCapture()
+                    }
+                    Button(showMetrics ? "إخفاء الأداء" : "عرض الأداء", systemImage: "chart.bar.xaxis") {
+                        showMetrics.toggle()
+                    }
+                    Button(aiAnalysis.enabled ? "إيقاف تحليل الصورة" : "تشغيل تحليل الصورة",
+                           systemImage: "viewfinder") {
+                        aiAnalysis.enabled.toggle()
+                    }
+                    Button("زر PlayStation", systemImage: "gamecontroller.fill") {
+                        session.clickPSButton()
+                    }
+                    Button("ترتيب أزرار اللمس", systemImage: "hand.draw") {
+                        showsVirtualControls = true
+                        isChoosingTouchLayout = true
+                    }
+                } label: {
+                    Label("الأدوات", systemImage: "slider.horizontal.3")
+                        .padding(.horizontal, 13)
+                        .frame(minHeight: 42)
+                        .background(.black.opacity(0.66), in: Capsule())
+                        .overlay(Capsule().stroke(TPPlayTheme.accent.opacity(0.45), lineWidth: 1))
+                }
+                .accessibilityLabel("أدوات البث والإعدادات")
+
+                Spacer(minLength: 4)
+
+                if assistance.armed {
+                    Label("مفعّلة", systemImage: "checkmark.circle.fill")
+                        .font(.caption2.bold())
+                        .foregroundStyle(.green)
+                        .padding(.horizontal, 9)
+                        .frame(height: 35)
+                        .background(.black.opacity(0.7), in: Capsule())
+                } else {
+                    Button("تشغيل") { assistance.armed = true }
+                        .padding(.horizontal, 13)
+                        .frame(minHeight: 42)
+                        .background(.green.opacity(0.84), in: Capsule())
+                        .accessibilityLabel("تفعيل المساعدة")
+                }
+
+                Button("إيقاف") { session.stopAssistanceNow() }
+                    .padding(.horizontal, 13)
+                    .frame(minHeight: 42)
+                    .background(.red.opacity(0.88), in: Capsule())
+                    .accessibilityLabel("إيقاف جميع المساعدات")
+            }
+            .font(.system(size: 12, weight: .bold))
+            .foregroundStyle(.white)
+
+            if showMetrics {
+                performancePanel
+                    .frame(maxWidth: 230)
+            }
+            if !assistance.armed, let reason = assistance.lastStopReason {
+                Text("المساعدة متوقفة: \(reason)")
+                    .font(.system(size: 10, weight: .medium))
+                    .lineLimit(1)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(.black.opacity(0.64), in: Capsule())
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+        .zIndex(10)
+    }
+
+    private func openCalibrationCapture() {
+        session.suspendAssistance(preserveActivation: true)
+        if let image = session.calibrationFrames.image() {
+            calibrationShot = CalibrationShot(image: image)
+        } else {
+            calibrationError = true
+            session.resumeAssistance()
+        }
+    }
+
+    private func openOpponentCapture() {
+        session.suspendAssistance(preserveActivation: true)
+        if let image = session.calibrationFrames.image() {
+            playerNameShot = CalibrationShot(image: image)
+        } else {
+            calibrationError = true
+            session.resumeAssistance()
+        }
+    }
+
     private var performancePanel: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(String(format: "الإطارات المعروضة: %.0f FPS", session.measuredFPS))
@@ -346,7 +393,7 @@ struct RemotePlayView: View {
 
                 if isEditingTouchLayout {
                     layoutEditingBar
-                } else if showsVirtualControls {
+                } else if showsVirtualControls && showsSessionMenu {
                     sessionMenu
                         .transition(.opacity)
                 }
