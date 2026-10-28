@@ -245,6 +245,7 @@ private final class TPFloatingStickView: UIView {
     private var origin: CGPoint?
     private var knobOffset = CGPoint.zero
     private let inputRadius: CGFloat = 24
+    var showsIdleIndicator = true { didSet { setNeedsDisplay() } }
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -301,15 +302,19 @@ private final class TPFloatingStickView: UIView {
     }
 
     override func draw(_ rect: CGRect) {
-        guard let origin, let context = UIGraphicsGetCurrentContext() else { return }
-        let outer = CGRect(x: origin.x - 58, y: origin.y - 58, width: 116, height: 116)
+        guard let context = UIGraphicsGetCurrentContext() else { return }
+        guard origin != nil || showsIdleIndicator else { return }
+        // Keep the left thumbstick visible at rest. It still floats to the
+        // user's initial touch position, preserving the existing controls.
+        let center = origin ?? CGPoint(x: bounds.width * 0.74, y: bounds.height * 0.74)
+        let outer = CGRect(x: center.x - 58, y: center.y - 58, width: 116, height: 116)
         context.setFillColor(UIColor.white.withAlphaComponent(0.10).cgColor)
         context.fillEllipse(in: outer)
         context.setStrokeColor(UIColor.white.withAlphaComponent(0.22).cgColor)
         context.setLineWidth(1)
         context.strokeEllipse(in: outer.insetBy(dx: 1, dy: 1))
 
-        let knobCenter = CGPoint(x: origin.x + knobOffset.x, y: origin.y + knobOffset.y)
+        let knobCenter = CGPoint(x: center.x + knobOffset.x, y: center.y + knobOffset.y)
         let knob = CGRect(x: knobCenter.x - 25, y: knobCenter.y - 25, width: 50, height: 50)
         context.setFillColor(UIColor.white.withAlphaComponent(0.30).cgColor)
         context.fillEllipse(in: knob)
@@ -334,13 +339,19 @@ private final class TPRelativeLookView: UIView {
     private var displayLinkProxy: TPRelativeLookDisplayLinkProxy?
     private var lastPublishedX: Int16 = 0
     private var lastPublishedY: Int16 = 0
+    // Right-side joystick is a visible cue for the existing relative-swipe
+    // camera input, not an extra input source or a change to the controller.
+    var showsIdleIndicator = true { didSet { setNeedsDisplay() } }
+    private var touchOrigin: CGPoint?
+    private var visualKnobOffset = CGPoint.zero
+    private let visualTravel: CGFloat = 24
 
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .clear
         isMultipleTouchEnabled = false
         isOpaque = false
-        accessibilityLabel = "Camera look area"
+        accessibilityLabel = "العصا اليمنى — اسحب لتحريك الكاميرا"
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -349,14 +360,25 @@ private final class TPRelativeLookView: UIView {
         guard trackedTouch == nil, let touch = touches.first else { return }
         trackedTouch = touch
         lastPoint = touch.location(in: self)
+        touchOrigin = lastPoint
+        visualKnobOffset = .zero
         lastMoveTimestamp = touch.timestamp
         filtered = .zero
         startDisplayLink()
+        setNeedsDisplay()
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         guard let touch = touches.first(where: { $0 === trackedTouch }) else { return }
         let point = touch.location(in: self)
+        if let origin = touchOrigin {
+            let dx = point.x - origin.x
+            let dy = point.y - origin.y
+            let length = hypot(dx, dy)
+            let fraction = length > visualTravel ? visualTravel / length : 1
+            visualKnobOffset = CGPoint(x: dx * fraction, y: dy * fraction)
+            setNeedsDisplay()
+        }
         let dt = max(1.0 / 240.0, min(1.0 / 30.0, touch.timestamp - lastMoveTimestamp))
         let frameScale = CGFloat((1.0 / 60.0) / dt)
         let targetX = max(-1, min(1, (point.x - lastPoint.x) * frameScale / 12 * sensitivityX))
@@ -379,11 +401,34 @@ private final class TPRelativeLookView: UIView {
 
     func resetInteraction() {
         trackedTouch = nil
+        touchOrigin = nil
+        visualKnobOffset = .zero
         displayLink?.invalidate()
         displayLink = nil
         displayLinkProxy = nil
         filtered = .zero
         publish()
+        setNeedsDisplay()
+    }
+
+    override func draw(_ rect: CGRect) {
+        guard let context = UIGraphicsGetCurrentContext() else { return }
+        guard touchOrigin != nil || showsIdleIndicator else { return }
+        let center = touchOrigin ?? CGPoint(x: bounds.width * 0.29, y: bounds.height * 0.74)
+        let outer = CGRect(x: center.x - 58, y: center.y - 58, width: 116, height: 116)
+        context.setFillColor(UIColor.white.withAlphaComponent(0.10).cgColor)
+        context.fillEllipse(in: outer)
+        context.setStrokeColor(UIColor.white.withAlphaComponent(0.22).cgColor)
+        context.setLineWidth(1)
+        context.strokeEllipse(in: outer.insetBy(dx: 1, dy: 1))
+
+        let knobCenter = CGPoint(x: center.x + visualKnobOffset.x,
+                                 y: center.y + visualKnobOffset.y)
+        let knob = CGRect(x: knobCenter.x - 25, y: knobCenter.y - 25, width: 50, height: 50)
+        context.setFillColor(UIColor.white.withAlphaComponent(0.30).cgColor)
+        context.fillEllipse(in: knob)
+        context.setStrokeColor(UIColor(red: 0.714, green: 1, blue: 0, alpha: 0.68).cgColor)
+        context.strokeEllipse(in: knob.insetBy(dx: 0.75, dy: 0.75))
     }
 
     private func startDisplayLink() {
@@ -705,7 +750,12 @@ private final class TPTouchpadView: UIView {
 final class TPVirtualControllerView: UIView, UIGestureRecognizerDelegate {
     // With a hardware controller, empty screen taps belong to overlay visibility,
     // not the full-screen virtual-stick surfaces. Visible buttons remain usable.
-    var passesBackgroundTouches = false
+    var passesBackgroundTouches = false {
+        didSet {
+            leftStick.showsIdleIndicator = !passesBackgroundTouches
+            rightLook.showsIdleIndicator = !passesBackgroundTouches
+        }
+    }
     private weak var session: RemotePlaySession?
     private let layoutStore = TouchLayoutStore.shared
     private let leftStick = TPFloatingStickView()
