@@ -111,9 +111,84 @@ struct AssistanceSettings: View {
                         Button("الرجل") { model.configuration.pointX = 0.5; model.configuration.pointY = 0.88 }
                     }.buttonStyle(.bordered)
                     BodyPointPicker(x: $model.configuration.pointX, y: $model.configuration.pointY, hue: vision.colorHue)
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("ضبط دقيق لموضع النقطة")
+                            .font(.headline)
+                            .foregroundStyle(.cyan)
+                        Text("اسحب النقطة على الجسم، أو اضبط المحورين أدناه بدقة 1٪. كل تغيير يظهر على الرسم مباشرة.")
+                            .font(.footnote)
+                        HStack {
+                            Text("أفقي (X)")
+                            Spacer()
+                            Text("\(Int((model.configuration.pointX * 100).rounded()))٪")
+                                .monospacedDigit()
+                                .foregroundStyle(.cyan)
+                        }
+                        Slider(value: $model.configuration.pointX, in: 0...1, step: 0.01)
+                            .tint(.cyan)
+                            .environment(\.layoutDirection, .leftToRight)
+                            .accessibilityLabel("ضبط الموضع الأفقي")
+                        HStack(spacing: 12) {
+                            Button {
+                                model.configuration.pointX = max(0, (model.configuration.pointX * 100 - 1).rounded() / 100)
+                            } label: {
+                                Label("يسار 1٪", systemImage: "arrow.left")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            Button {
+                                model.configuration.pointX = min(1, (model.configuration.pointX * 100 + 1).rounded() / 100)
+                            } label: {
+                                Label("يمين 1٪", systemImage: "arrow.right")
+                                    .frame(maxWidth: .infinity)
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        HStack {
+                            Text("رأسي (Y)")
+                            Spacer()
+                            Text("\(Int((model.configuration.pointY * 100).rounded()))٪")
+                                .monospacedDigit()
+                                .foregroundStyle(.cyan)
+                        }
+                        Slider(value: $model.configuration.pointY, in: 0...1, step: 0.01)
+                            .tint(.cyan)
+                            .environment(\.layoutDirection, .leftToRight)
+                            .accessibilityLabel("ضبط الموضع الرأسي")
+                        HStack(spacing: 12) {
+                            Button {
+                                model.configuration.pointY = max(0, (model.configuration.pointY * 100 - 1).rounded() / 100)
+                            } label: {
+                                Label("أعلى 1٪", systemImage: "arrow.up")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            Button {
+                                model.configuration.pointY = min(1, (model.configuration.pointY * 100 + 1).rounded() / 100)
+                            } label: {
+                                Label("أسفل 1٪", systemImage: "arrow.down")
+                                    .frame(maxWidth: .infinity)
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    .padding(14)
+                    .background(Color.cyan.opacity(0.07), in: RoundedRectangle(cornerRadius: 12))
                     Toggle("إظهار النقطة المحددة على جسم اللاعب تلقائيًا", isOn: $vision.adaptiveBodyMarker)
                     Text("اختر الرأس أو البطن أو الرجل، أو اسحب النقطة إلى موضع مخصص. إذا أمكن ربط الاسم الملون بشخص ظاهر، تتحرك نقطة المعاينة مع جسمه وتتكيف مع حجمه عند الاقتراب والابتعاد. عند عدم التعرف على الشخص لن يظهر موضع متخيل.")
                         .font(.footnote)
+                    Button {
+                        if model.saveSettings() && vision.saveSettings() {
+                            savedNotice = "تم حفظ موضع النقطة وخيار التتبع المرئي."
+                        } else {
+                            savedNotice = "تعذر حفظ إعدادات موضع النقطة."
+                        }
+                    } label: {
+                        Label("حفظ موضع النقطة", systemImage: "square.and.arrow.down")
+                            .frame(maxWidth: .infinity, minHeight: 46)
+                    }
+                    .buttonStyle(AcidButtonStyle(active: true))
+                    if !savedNotice.isEmpty {
+                        Text(savedNotice).font(.footnote).foregroundStyle(.secondary)
+                    }
                 }
                 VelmiraSection("إذا كان اللون فوق الرأس") {
                     valueSlider("الإزاحة الأفقية من الاسم", value: $model.configuration.colorOffsetX, range: -0.3...0.3)
