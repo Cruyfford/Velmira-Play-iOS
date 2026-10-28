@@ -20,6 +20,11 @@ struct HomeView: View {
                     NavigationLink {
                         LinkDiagnosticView()
                     } label: { settingsCard("فحص الاتصال", subtitle: "اختبار اتصالك بجهاز PS5", icon: "wifi") }
+                    NavigationLink {
+                        RemotePlayInternetSettingsView()
+                    } label: {
+                        settingsCard("الاتصال البعيد عبر 5G", subtitle: "تسجيل PSN وربط جهاز PS5 عبر الإنترنت", icon: "globe")
+                    }
                     VelmiraSection {
                         HStack {
                             Image(systemName: "lock.shield").foregroundStyle(TPPlayTheme.accent)
@@ -328,3 +333,115 @@ private enum PSNWebAuthenticationError: LocalizedError {
 }
 
 #Preview { HomeView() }
+
+
+/// Sets up the existing Chiaki PSN holepunch route without exposing secrets in logs.
+/// Tokens are persisted solely in Keychain; one-use OAuth redirects never leave this UI.
+struct RemotePlayInternetSettingsView: View {
+    @ObservedObject private var remote = RemoteCredentialStore.shared
+    @StateObject private var registered = RegisteredConsoleStore()
+    @State private var pastedRedirect = ""
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                VelmiraSection("اتصال PS5 عبر 5G والإنترنت") {
+                    Text("ربط الحساب هنا مختلف عن مزامنة الكؤوس. هذا الربط يتيح اختيار جهازك من قائمة PlayStation Network.")
+                    Text(remote.isSignedIn ? "حساب الاتصال البعيد: \\(remote.accountName ?? "PSN")" : "لم يتم ربط حساب الاتصال البعيد.")
+                        .foregroundStyle(remote.isSignedIn ? .green : .orange)
+                    Button("1 — فتح تسجيل دخول Sony للاتصال البعيد") {
+                        if let url = remote.authorizationURL() {
+                            UIApplication.shared.open(url)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .buttonStyle(AcidButtonStyle(active: true))
+                    Text("بعد تسجيل الدخول في Safari، انسخ الرابط النهائي من شريط العنوان والصقه في الحقل الآمن هنا. لا ترسل الرابط أو رمزه لأي شخص.")
+                        .font(.footnote)
+                    SecureField("2 — الصق رابط Sony النهائي هنا", text: $pastedRedirect)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .textFieldStyle(AcidFieldStyle())
+                        .environment(\.layoutDirection, .leftToRight)
+                    Button(remote.isLinking ? "جارٍ ربط PSN…" : "3 — حفظ الربط واكتشاف أجهزة PS5") {
+                        let submitted = pastedRedirect
+                        pastedRedirect = ""
+                        Task { _ = await remote.linkFromPSNRedirect(submitted) }
+                    }
+                    .disabled(pastedRedirect.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || remote.isLinking)
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .buttonStyle(AcidButtonStyle(active: true))
+                    if remote.isLinking { ProgressView() }
+                    if let status = remote.statusMessage {
+                        Text(status).font(.footnote)
+                    }
+                    if let error = remote.storageError {
+                        Text("تعذر فتح بيانات الاتصال الآمنة: \\(error)")
+                            .font(.footnote).foregroundStyle(.red)
+                    }
+                }
+                VelmiraSection("أجهزة PlayStation المتاحة عبر الإنترنت") {
+                    Button(remote.isRefreshingDevices ? "جارٍ تحديث الأجهزة…" : "تحديث أجهزة PS5 من PSN") {
+                        Task { await remote.updateRemoteDevices() }
+                    }
+                    .disabled(!remote.isSignedIn || remote.isRefreshingDevices)
+                    if remote.isRefreshingDevices { ProgressView() }
+                    if remote.linkedDevices.isEmpty {
+                        Text("لا توجد أجهزة قابلة للاتصال بعد. فعّل Remote Play على PS5، وتأكد من حساب Sony نفسه، ثم حدث القائمة.")
+                            .font(.footnote)
+                    } else {
+                        ForEach(remote.linkedDevices, id: \.self) { name in
+                            Label(name, systemImage: "gamecontroller.fill")
+                        }
+                    }
+                }
+                ForEach(registered.consoles) { console in
+                    RemoteConsoleSelectionRow(console: console, remote: remote)
+                }
+                VelmiraSection("خطوات التشغيل") {
+                    Text("على PS5: الإعدادات ← النظام ← اللعب عن بُعد ← تمكين اللعب عن بُعد. وللتشغيل من وضع السكون فعّل البقاء متصلاً بالإنترنت والسماح بالتشغيل عبر الشبكة.")
+                    Text("بعد ربط الحساب والجهاز، افتح قسم PS5 واضغط «بدء اللعب» ثم اختر تلقائي أو الإنترنت. يعمل عبر Wi-Fi أو بيانات الهاتف متى سمحت الشبكة وPSN بذلك.")
+                    Text("قد تمنع بعض شبكات 5G وNAT الاتصال حتى بعد نجاح الربط؛ نجاح التسجيل لا يضمن اكتمال الاتصال أو سرعة ثابتة.")
+                        .font(.footnote)
+                    Button("فصل حساب الاتصال البعيد", role: .destructive) {
+                        remote.unlink()
+                    }
+                    .disabled(!remote.isSignedIn)
+                }
+            }
+            .padding(20)
+        }
+        .background(TPPlayTheme.canvas)
+        .navigationTitle("الاتصال عن بُعد")
+        .navigationBarTitleDisplayMode(.inline)
+        .environment(\.layoutDirection, .rightToLeft)
+    }
+}
+
+private struct RemoteConsoleSelectionRow: View {
+    let console: RegisteredConsole
+    @ObservedObject var remote: RemoteCredentialStore
+
+    var body: some View {
+        VelmiraSection("ربط \\(console.nickname) بجهاز PSN") {
+            if remote.linkedDevices.isEmpty {
+                Text("افتح تسجيل الدخول أولًا ثم حدث أجهزة PSN.").font(.footnote)
+            } else {
+                Text("اختر اسم الجهاز الصحيح؛ يُستخدم في الاتصال عن بُعد فقط.")
+                    .font(.footnote)
+                ForEach(remote.linkedDevices, id: \.self) { name in
+                    Button {
+                        remote.selectRemoteDevice(name, for: console)
+                    } label: {
+                        HStack {
+                            Image(systemName: remote.selectedDeviceName(for: console) == name
+                                  ? "checkmark.circle.fill" : "circle")
+                            Text(name)
+                            Spacer()
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
