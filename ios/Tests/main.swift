@@ -90,8 +90,15 @@ require(persistence.update([markB], at: 20.8).isEmpty, "Second sample at new loc
 let secondConfirmed = persistence.update([markB], at: 21.0)
 require(secondConfirmed.count == 1 && secondConfirmed[0].id != firstConfirmed[0].id,
         "New marker must not inherit old persistent identifier")
-require(persistence.update([], at: 21.2).isEmpty, "Missing sample revokes confirmation")
-require(persistence.update([markB], at: 21.4).isEmpty, "Reappearance starts new confirmation")
+require(persistence.update([], at: 21.2).isEmpty, "Missing sample must never output stale target")
+let regained = persistence.update([markB], at: 21.4)
+require(regained.count == 1 && regained[0].id == secondConfirmed[0].id,
+        "A nearby marker retains visual identity after brief occlusion")
+require(persistence.update([], at: 21.6).isEmpty, "First missing frame is not rendered")
+require(persistence.update([], at: 21.8).isEmpty, "Second missing frame is not rendered")
+require(persistence.update([], at: 22.0).isEmpty, "Third missing frame expires the track")
+require(persistence.update([markB], at: 22.2).isEmpty,
+        "Expired target must be confirmed again before showing")
 require(persistence.update([CGRect(x: -0.1, y: 0.4, width: 0.1, height: 0.1)],
                            at: 21.6).isEmpty, "Out-of-bounds coordinates must be discarded")
 persistence.reset()
