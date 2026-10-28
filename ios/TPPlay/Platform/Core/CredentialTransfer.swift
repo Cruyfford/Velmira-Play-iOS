@@ -188,17 +188,17 @@ final class RemoteCredentialStore: ObservableObject {
         } catch { statusMessage = error.localizedDescription }
     }
 
-    private func tokenExchange(code: String, duid: String) async throws
+    private func tokenExchange(code: String, duid _: String) async throws
         -> (access: String, refresh: String, expires: Double) {
         var form = URLComponents()
+        // The Windows Remote Play client authenticates this legacy OAuth
+        // grant with HTTP Basic, and the body contains only the three
+        // authorization-code fields. Supplying the authorize-only scope,
+        // device identifier and redundant client fields may trigger HTTP 400.
         form.queryItems = [
             URLQueryItem(name: "grant_type", value: "authorization_code"),
             URLQueryItem(name: "code", value: code),
-            URLQueryItem(name: "redirect_uri", value: PSNRemoteAuth.redirectURI),
-            URLQueryItem(name: "client_id", value: PSNRemoteAuth.clientID),
-            URLQueryItem(name: "client_secret", value: PSNRemoteAuth.clientSecret),
-            URLQueryItem(name: "scope", value: PSNRemoteAuth.scopes),
-            URLQueryItem(name: "duid", value: duid)
+            URLQueryItem(name: "redirect_uri", value: PSNRemoteAuth.redirectURI)
         ]
         var request = URLRequest(url: PSNRemoteAuth.tokenURL)
         request.httpMethod = "POST"
@@ -265,7 +265,31 @@ final class RemoteCredentialStore: ObservableObject {
             throw RemoteSetupError.message("فشل الاتصال بخادم PlayStation.")
         }
         guard (200..<300).contains(status) else {
-            throw RemoteSetupError.message("رفض PSN طلب الاتصال (HTTP \(status)).")
+            // Do not echo the response body: some PSN errors can include
+            // auth URLs or tokens. Report only known, non-secret error codes.
+            let responseBody = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            let reason = (responseBody?["error"] as? String ?? "").lowercased()
+            let safeReason = ["invalid_grant", "invalid_client", "invalid_scope",
+                              "invalid_request", "unauthorized_client"].contains(reason)
+                ? reason : nil
+            if status == 400, reason == "invalid_grant" {
+                throw RemoteSetupError.message(
+                    "انتهت صلاحية رابط Sony أو استُخدم رمز الدخول سابقًا (HTTP 400 / invalid_grant). افتح تسجيل دخول جديد وانسخ الرابط الجديد فورًا."
+                )
+            }
+            if status == 400, reason == "invalid_client" {
+                throw RemoteSetupError.message(
+                    "رفض PSN معرّف عميل Remote Play (HTTP 400 / invalid_client). جرّب تحديث التطبيق."
+                )
+            }
+            if status == 400, reason == "invalid_scope" {
+                throw RemoteSetupError.message(
+                    "رفض PSN نطاق صلاحيات الاتصال البعيد (HTTP 400 / invalid_scope)."
+                )
+            }
+            throw RemoteSetupError.message(
+                "رفض PSN طلب الاتصال (HTTP \(status)\(safeReason.map { " / " + $0 } ?? "")). إذا كانت هذه محاولة ربط، افتح تسجيل دخول Sony جديدًا، ولا تعِد استخدام الرابط القديم."
+            )
         }
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw RemoteSetupError.message("استجابة PSN غير مفهومة.")
@@ -323,14 +347,11 @@ final class RemoteCredentialStore: ObservableObject {
         guard !credentials.refreshToken.isEmpty else { throw RemoteCredentialError.signInRequired }
 
         var body = URLComponents()
+        // Client credentials travel via HTTP Basic; the refresh token
+        // already carries its original authorized scopes.
         body.queryItems = [
             URLQueryItem(name: "grant_type", value: "refresh_token"),
-            URLQueryItem(name: "refresh_token", value: credentials.refreshToken),
-            URLQueryItem(name: "scope", value: PSNRemoteAuth.scopes),
-            URLQueryItem(name: "redirect_uri", value: PSNRemoteAuth.redirectURI),
-            URLQueryItem(name: "client_id", value: PSNRemoteAuth.clientID),
-            URLQueryItem(name: "client_secret", value: PSNRemoteAuth.clientSecret),
-            URLQueryItem(name: "duid", value: credentials.clientDUID),
+            URLQueryItem(name: "refresh_token", value: credentials.refreshToken)
         ]
 
         var request = URLRequest(url: PSNRemoteAuth.tokenURL)
