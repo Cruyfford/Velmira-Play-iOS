@@ -15,6 +15,43 @@ struct HumanDetection: Identifiable, Sendable {
     /// Missing or ambiguous associations must not create a body-point marker.
     var matchedPersonBox: CGRect? = nil
 }
+/// Pairs a colored player name with a visible body for a read-only overlay.
+/// Missing/ambiguous evidence produces no automatic body marker.
+enum VisualBodyAssociation {
+    static func bestPerson(for name: CGRect, among people: [CGRect]) -> CGRect? {
+        guard name.width > 0, name.height > 0 else { return nil }
+        let options: [(rect: CGRect, score: CGFloat)] = people.compactMap { body in
+            guard body.width >= 0.015, body.height >= 0.055,
+                  body.minX >= 0, body.minY >= 0,
+                  body.maxX <= 1, body.maxY <= 1 else { return nil }
+            let toleranceX = max(0.02, min(0.06, body.width * 0.3))
+            guard name.midX >= body.minX - toleranceX,
+                  name.midX <= body.maxX + toleranceX else { return nil }
+            let verticalGap = name.minY - body.maxY
+            let allowableGap = max(0.035, min(0.12, body.height * 0.6))
+            let allowableOverlap = max(0.018, min(0.045, body.height * 0.15))
+            guard verticalGap >= -allowableOverlap,
+                  verticalGap <= allowableGap else { return nil }
+            let xError = abs(name.midX - body.midX) / max(0.025, body.width)
+            let yError = abs(verticalGap) / max(0.025, allowableGap)
+            return (body, xError + yError * 0.65)
+        }.sorted { $0.score < $1.score }
+        guard let best = options.first else { return nil }
+        // Reject two similarly plausible players under the same colored name.
+        if options.count > 1 && options[1].score - best.score < 0.28 { return nil }
+        return best.rect
+    }
+
+    /// Selected relative body location, automatically scaling with visible size.
+    /// Returns top-left normalized video coordinates for SwiftUI display.
+    static func selectedPoint(in body: CGRect, x: Double, y: Double) -> CGPoint {
+        let px = min(1, max(0, x))
+        let py = min(1, max(0, y))
+        return CGPoint(x: body.minX + body.width * px,
+                       y: 1 - body.maxY + body.height * py)
+    }
+}
+
 struct HumanAnalysis: Sendable {
     let detections: [HumanDetection]
     let imageSize: CGSize
@@ -242,13 +279,11 @@ struct AIAnalysisOverlay: View {
                     let height = result.imageSize.height * scale
                     let left = (geometry.size.width - width) / 2
                     let top = (geometry.size.height - height) / 2
-                    if assistance.armed {
-                        Circle().stroke(Color.white.opacity(0.35), style: StrokeStyle(lineWidth: 1, dash: [5]))
-                            .frame(width: assistance.configuration.radius * 2 * width, height: assistance.configuration.radius * 2 * height)
-                            .position(x: left + width / 2, y: top + height / 2)
-                    }
+                    // Keep the stream uncluttered: a small dot instead of
+                    // the old large targeting-radius rings.
                     if let target = assistance.target {
-                        Circle().stroke(Color.yellow, lineWidth: 2).frame(width: 16, height: 16)
+                        Circle().fill(.yellow).frame(width: 7, height: 7)
+                            .overlay { Circle().stroke(.black, lineWidth: 1) }
                             .position(x: left + target.x * width, y: top + target.y * height)
                     }
                     ForEach(result.detections) { detection in
@@ -263,6 +298,16 @@ struct AIAnalysisOverlay: View {
                                     .padding(3).background(Color.cyan)
                             }
                             .position(x: left + r.midX * width, y: top + (1 - r.midY) * height)
+                        if model.adaptiveBodyMarker, let body = detection.matchedPersonBox {
+                            let position = VisualBodyAssociation.selectedPoint(
+                                in: body, x: assistance.configuration.pointX,
+                                y: assistance.configuration.pointY)
+                            Circle().fill(Color.green)
+                                .frame(width: 8, height: 8)
+                                .overlay { Circle().stroke(Color.black, lineWidth: 1.5) }
+                                .position(x: left + position.x * width,
+                                          y: top + position.y * height)
+                        }
                     }
                 }
             }
