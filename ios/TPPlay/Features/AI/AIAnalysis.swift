@@ -357,6 +357,7 @@ struct AIAnalysisSettings: View {
             .background(TPPlayTheme.canvas)
             .navigationTitle("الذكاء الاصطناعي")
             .navigationBarTitleDisplayMode(.inline)
+            .onDisappear { model.restoreSavedSettings() }
             .toolbarBackground(TPPlayTheme.canvas, for: .navigationBar)
             .environment(\.layoutDirection, .rightToLeft)
         }
@@ -395,10 +396,17 @@ final class MatchRoster: ObservableObject {
     @Published var matchNumber = 1
     @Published var autoScanEnabled = UserDefaults.standard.object(forKey: "velmira.roster.autoscan.v1") as? Bool ?? true {
         didSet {
-            UserDefaults.standard.set(autoScanEnabled, forKey: "velmira.roster.autoscan.v1")
             AutoRosterScanner.shared.configure(enabled: autoScanEnabled)
             if !autoScanEnabled { pending.removeAll() }
         }
+    }
+
+    func saveAutoScanSetting() {
+        UserDefaults.standard.set(autoScanEnabled, forKey: "velmira.roster.autoscan.v1")
+    }
+
+    func restoreAutoScanSetting() {
+        autoScanEnabled = UserDefaults.standard.object(forKey: "velmira.roster.autoscan.v1") as? Bool ?? true
     }
     @Published private(set) var autoStatus = "يُراقب الأسماء الملونة أثناء بث PS5 عند تفعيل الاكتشاف."
     private struct Pending {
@@ -548,6 +556,7 @@ final class MatchRoster: ObservableObject {
 }
 struct MatchRosterView: View {
     @ObservedObject private var roster = MatchRoster.shared
+    @State private var autoScanSavedNotice = ""
     @State private var photo: PhotosPickerItem?
     @State private var showReset = false
     @State private var newName = ""
@@ -557,6 +566,17 @@ struct MatchRosterView: View {
                 VelmiraSection("قائمة المباراة \(roster.matchNumber)") {
                     Text("قراءة أسماء لوحة النتائج بالذكاء الاصطناعي على جهازك.")
                     Toggle("التقاط أسماء اللاعبين تلقائيًا أثناء بث PS5", isOn: $roster.autoScanEnabled)
+                    Button {
+                        roster.saveAutoScanSetting()
+                        autoScanSavedNotice = "تم حفظ إعداد التقاط الأسماء التلقائي."
+                    } label: {
+                        Label("حفظ إعدادات قائمة الفرق", systemImage: "square.and.arrow.down")
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    .buttonStyle(AcidButtonStyle(active: true))
+                    if !autoScanSavedNotice.isEmpty {
+                        Text(autoScanSavedNotice).font(.footnote)
+                    }
                     Text("الأحمر الغامق = الخصوم، الأزرق = فريقي. يتطلب تكرار الاسم في لقطتين على الأقل؛ التصنيف تقريبي ويحتاج مراجعة.")
                         .font(.footnote).foregroundStyle(.orange)
                     Text(roster.autoStatus).font(.footnote)
