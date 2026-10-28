@@ -235,6 +235,8 @@ final class GameProfiles: ObservableObject {
     static let shared = GameProfiles()
     @Published var profiles: [GameProfile] = []
     @Published var message = ""
+    @Published private(set) var hasPendingAppliedProfile = false
+    private var pendingQuality: (resolution: Int, fps: Int, bitrate: Int)?
     private let key = "velmira.gameProfiles.v1"
     init() {
         if let data = UserDefaults.standard.data(forKey: key) {
@@ -254,9 +256,9 @@ final class GameProfiles: ObservableObject {
         profiles.append(GameProfile(name: clean, assistance: AssistanceState.shared.configuration,
             hue: ai.colorHue, tolerance: ai.colorTolerance, colorMode: ai.colorMode,
             threshold: ai.threshold, rate: ai.rate,
-            resolution: defaults.object(forKey: "streamResolution") as? Int ?? 1080,
-            fps: defaults.object(forKey: "streamFPS") as? Int ?? 60,
-            bitrate: defaults.object(forKey: "streamBitrate") as? Int ?? 15000))
+            resolution: pendingQuality?.resolution ?? (defaults.object(forKey: "streamResolution") as? Int ?? 1080),
+            fps: pendingQuality?.fps ?? (defaults.object(forKey: "streamFPS") as? Int ?? 60),
+            bitrate: pendingQuality?.bitrate ?? (defaults.object(forKey: "streamBitrate") as? Int ?? 15000)))
         message = "تم حفظ ملف جديد."
         persist()
     }
@@ -267,12 +269,39 @@ final class GameProfiles: ObservableObject {
         ai.enabled = false
         ai.colorHue = profile.hue; ai.colorTolerance = profile.tolerance
         ai.colorMode = profile.colorMode; ai.threshold = profile.threshold; ai.rate = profile.rate
-        let defaults = UserDefaults.standard
-        defaults.set(profile.resolution, forKey: "streamResolution")
-        defaults.set(profile.fps, forKey: "streamFPS")
-        defaults.set(profile.bitrate, forKey: "streamBitrate")
-        message = "تم تطبيق «\(profile.name)». المساعدات متوقفة؛ جودة البث تطبق عند الاتصال التالي."
+        pendingQuality = (profile.resolution, profile.fps, profile.bitrate)
+        hasPendingAppliedProfile = true
+        message = "تم تحميل «\(profile.name)» مؤقتًا. اضغط حفظ الإعدادات لتثبيته؛ المساعدة متوقفة."
     }
+
+    @discardableResult
+    func saveCurrentSettings() -> Bool {
+        guard AssistanceState.shared.saveSettings(),
+              AIAnalysisState.shared.saveSettings() else {
+            message = "تعذر حفظ إعدادات اللعبة."
+            return false
+        }
+        if let pendingQuality {
+            let defaults = UserDefaults.standard
+            defaults.set(pendingQuality.resolution, forKey: "streamResolution")
+            defaults.set(pendingQuality.fps, forKey: "streamFPS")
+            defaults.set(pendingQuality.bitrate, forKey: "streamBitrate")
+        }
+        pendingQuality = nil
+        hasPendingAppliedProfile = false
+        message = "تم حفظ الإعدادات المطبقة بشكل دائم."
+        return true
+    }
+
+    func discardUnsavedProfile() {
+        guard hasPendingAppliedProfile else { return }
+        pendingQuality = nil
+        hasPendingAppliedProfile = false
+        AssistanceState.shared.restoreSavedSettings()
+        AIAnalysisState.shared.restoreSavedSettings()
+        message = "تم إلغاء تطبيق ملف الإعدادات غير المحفوظ."
+    }
+
     func remove(_ id: UUID) { profiles.removeAll { $0.id == id }; persist() }
 }
 struct VelmiraToolsView: View {
@@ -288,8 +317,12 @@ struct VelmiraToolsView: View {
                     VelmiraSection("أدوات البث") {
                         Toggle("عرض لوحة الأداء أثناء البث", isOn: $showMetrics)
                         Button {
-                            UserDefaults.standard.set(showMetrics, forKey: "velmira.showMetrics.compact.v2")
-                            toolsNotice = "تم حفظ إعدادات أدوات البث."
+                            if profiles.saveCurrentSettings() {
+                                UserDefaults.standard.set(showMetrics, forKey: "velmira.showMetrics.compact.v2")
+                                toolsNotice = "تم حفظ إعدادات الأدوات وملف اللعبة المطبق."
+                            } else {
+                                toolsNotice = "تعذر حفظ بعض الإعدادات."
+                            }
                         } label: {
                             Label("حفظ إعدادات الأدوات", systemImage: "square.and.arrow.down")
                                 .frame(maxWidth: .infinity, minHeight: 48)
@@ -339,6 +372,7 @@ struct VelmiraToolsView: View {
         }.environment(\.layoutDirection, .rightToLeft)
         .onDisappear {
             showMetrics = UserDefaults.standard.object(forKey: "velmira.showMetrics.compact.v2") as? Bool ?? false
+            profiles.discardUnsavedProfile()
         }
     }
 }
