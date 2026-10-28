@@ -69,6 +69,7 @@ final class RemoteCredentialStore: ObservableObject {
             duid = "0000000700410080" + bytes.map { String(format: "%02x", $0) }.joined()
             UserDefaults.standard.set(duid, forKey: duidKey)
         }
+        UserDefaults.standard.set(duid, forKey: duidKey)
         var components = URLComponents(string: "https://auth.api.sonyentertainmentnetwork.com/2.0/oauth/authorize")!
         components.queryItems = [
             URLQueryItem(name: "service_entity", value: "urn:service-entity:psn"),
@@ -113,7 +114,16 @@ final class RemoteCredentialStore: ObservableObject {
             }
             var littleEndian = numericAccount.littleEndian
             let encodedAccount = withUnsafeBytes(of: &littleEndian) { Data($0).base64EncodedString() }
-            let devices = try await fetchRemoteDevices(token: result.access)
+            // A temporary PSN devices-endpoint failure must not discard a
+            // valid account authorization and force another browser sign-in.
+            var discoveryProblem: String?
+            let devices: [StoredRemoteDevice]
+            do {
+                devices = try await fetchRemoteDevices(token: result.access)
+            } catch {
+                discoveryProblem = error.localizedDescription
+                devices = []
+            }
             let credential = StoredPSNCredentials(
                 npsso: "", accessToken: result.access, refreshToken: result.refresh,
                 tokenExpiry: Date().timeIntervalSince1970 * 1000 + result.expires * 1000,
@@ -123,9 +133,11 @@ final class RemoteCredentialStore: ObservableObject {
             try keychain.save(RemoteCredentialPayload(credentials: credential, remoteDevices: devices))
             credentials = credential
             remoteDevices = devices
-            statusMessage = devices.isEmpty
+            statusMessage = discoveryProblem.map {
+                "تم حفظ تسجيل الدخول. تعذر اكتشاف PS5 الآن: \($0). جرّب تحديث أجهزة PSN."
+            } ?? (devices.isEmpty
                 ? "تم تسجيل الدخول، لكن لم يُعثر على PS5 مرتبط بالحساب. تأكد من Remote Play وحدث الأجهزة."
-                : "تم ربط PSN للاتصال البعيد. الأجهزة المكتشفة: \(devices.count)."
+                : "تم ربط PSN للاتصال البعيد. الأجهزة المكتشفة: \(devices.count).")
             return true
         } catch {
             statusMessage = error.localizedDescription
@@ -316,6 +328,7 @@ final class RemoteCredentialStore: ObservableObject {
             URLQueryItem(name: "redirect_uri", value: PSNRemoteAuth.redirectURI),
             URLQueryItem(name: "client_id", value: PSNRemoteAuth.clientID),
             URLQueryItem(name: "client_secret", value: PSNRemoteAuth.clientSecret),
+            URLQueryItem(name: "duid", value: credentials.clientDUID),
         ]
 
         var request = URLRequest(url: PSNRemoteAuth.tokenURL)
