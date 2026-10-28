@@ -118,7 +118,10 @@ private enum VelmiraSettingsTransfer {
            bytes > 1_048_576 {
             throw VelmiraImportError.tooLarge
         }
-        guard let data = try? Data(contentsOf: url), data.count <= 1_048_576 else {
+        let resource = try? url.resourceValues(forKeys: [.isRegularFileKey])
+        guard resource?.isRegularFile != false,
+              let data = try? Data(contentsOf: url),
+              data.count <= 1_048_576 else {
             throw VelmiraImportError.cannotRead
         }
         let decoder = JSONDecoder()
@@ -328,7 +331,11 @@ struct HomeView: View {
             }
             .background(TPPlayTheme.canvas)
             .toolbar(.hidden, for: .navigationBar)
-            .fileImporter(isPresented: $showImportPicker, allowedContentTypes: [.json]) { result in
+            // Files / iCloud / ChatGPT downloads may identify a .json file as
+            // generic data rather than public.json. Allow picking any file here;
+            // importFile performs size, JSON schema and numeric-range validation
+            // before it applies or saves user preferences.
+            .fileImporter(isPresented: $showImportPicker, allowedContentTypes: [.item]) { result in
                 switch result {
                 case .success(let url):
                     do {
