@@ -86,12 +86,17 @@ final class AIFrameAnalyzer: @unchecked Sendable {
     func invalidate() { lock.lock(); generation &+= 1; lock.unlock() }
     func setPaused(_ value: Bool) {
         lock.lock(); paused = value; generation &+= 1; lock.unlock()
+        // Keep the independent roster OCR aligned with video foreground state.
+        AutoRosterScanner.shared.setPaused(value)
     }
     private func current(_ token: UInt64) -> Bool {
         lock.lock(); defer { lock.unlock() }
         return enabled && !paused && generation == token
     }
     func submit(_ pixelBuffer: CVPixelBuffer) {
+        // Read names without requiring the person/color overlay to be enabled.
+        // The roster reader has its own capped rate and pause policy.
+        AutoRosterScanner.shared.submit(pixelBuffer)
         let now = ProcessInfo.processInfo.systemUptime
         let thermal = ProcessInfo.processInfo.thermalState
         lock.lock()
