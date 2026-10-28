@@ -9,7 +9,7 @@ struct RemotePlayView: View {
     @ObservedObject private var touchLayouts = TouchLayoutStore.shared
     @ObservedObject private var aiAnalysis = AIAnalysisState.shared
     @ObservedObject private var assistance = AssistanceState.shared
-    @AppStorage("velmira.showMetrics") private var showMetrics = true
+    @AppStorage("velmira.showMetrics.compact.v2") private var showMetrics = false
     @State private var calibrationShot: CalibrationShot?
     @State private var playerNameShot: CalibrationShot?
     @State private var calibrationError = false
@@ -273,8 +273,10 @@ struct RemotePlayView: View {
             .foregroundStyle(.white)
 
             if showMetrics {
-                performancePanel
-                    .frame(maxWidth: 230)
+                if case .connected = session.state {
+                    performancePanel
+                        .frame(maxWidth: 230)
+                }
             }
             if !assistance.armed, let reason = assistance.lastStopReason {
                 Text("المساعدة متوقفة: \(reason)")
