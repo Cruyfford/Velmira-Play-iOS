@@ -3,6 +3,7 @@ import Vision
 import CoreVideo
 import ImageIO
 import PhotosUI
+import CoreImage
 
 struct HumanDetection: Identifiable, Sendable {
     let id: UUID
@@ -256,7 +257,7 @@ struct AIAnalysisSettings: View {
     }
 }
 
-enum RosterSide: String, CaseIterable, Identifiable, Codable {
+enum RosterSide: String, CaseIterable, Identifiable, Codable, Sendable {
     case unknown = "غير مصنف", friendly = "فريقي", opponent = "الخصوم"
     var id: String { rawValue }
 }
@@ -266,7 +267,17 @@ struct RosterName: Identifiable, Codable {
     var side: RosterSide = .unknown
     /// Saved visual identifier; it does not verify which team the player belongs to.
     var nameColorHEX: String? = nil
+    /// User-confirmed team assignment always takes precedence over OCR heuristics.
+    /// Optional for backwards-compatible decoding of saved rosters.
+    var isConfirmedByUser: Bool? = nil
 }
+
+struct AutoRosterCandidate: Sendable {
+    let name: String
+    let side: RosterSide
+    let hex: String
+}
+
 @MainActor
 final class MatchRoster: ObservableObject {
     static let shared = MatchRoster()
@@ -276,6 +287,22 @@ final class MatchRoster: ObservableObject {
     @Published var reading = false
     @Published var message = "ابدأ مباراة جديدة ثم أضف صورة لوحة النتائج."
     @Published var matchNumber = 1
+    @Published var autoScanEnabled = UserDefaults.standard.object(forKey: "velmira.roster.autoscan.v1") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(autoScanEnabled, forKey: "velmira.roster.autoscan.v1")
+            AutoRosterScanner.shared.configure(enabled: autoScanEnabled)
+            if !autoScanEnabled { pending.removeAll() }
+        }
+    }
+    @Published private(set) var autoStatus = "يُراقب الأسماء الملونة أثناء بث PS5 عند تفعيل الاكتشاف."
+    private struct Pending {
+        var side: RosterSide
+        var hex: String
+        var hits: Int
+        var firstTime: TimeInterval
+        var lastTime: TimeInterval
+    }
+    private var pending: [String: Pending] = [:]
     private var generation = UUID()
     private let storageKey = "velmira.match.roster.v1"
 
@@ -292,7 +319,55 @@ final class MatchRoster: ObservableObject {
         }
     }
 
-    /// Explicit user confirmation is required before an OCR name becomes an opponent.
+    /// OCR color is a heuristic, not proof of a team. Repeated observations
+    /// are needed and manual roster corrections always win.
+    func acceptAutoCandidates(_ candidates: [AutoRosterCandidate], sampledAt now: TimeInterval) {
+        guard autoScanEnabled else { return }
+        pending = pending.filter { now - $0.value.lastTime <= 7 }
+        var processed = Set<String>()
+        for candidate in candidates.prefix(10) {
+            let name = candidate.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard name.count >= 2, name.count <= 24,
+                  name.rangeOfCharacter(from: .letters) != nil else { continue }
+            let key = name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            guard processed.insert(key).inserted else { continue }
+            var entry = pending[key]
+            if let current = entry, current.side == candidate.side,
+               now - current.lastTime >= 0.35, now - current.lastTime <= 7 {
+                entry = Pending(side: candidate.side, hex: candidate.hex,
+                                hits: min(5, current.hits + 1),
+                                firstTime: current.firstTime, lastTime: now)
+            } else if entry == nil || entry?.side != candidate.side {
+                entry = Pending(side: candidate.side, hex: candidate.hex,
+                                hits: 1, firstTime: now, lastTime: now)
+            }
+            guard let confirmed = entry else { continue }
+            pending[key] = confirmed
+            guard confirmed.hits >= 2 else { continue }
+
+            if let index = names.firstIndex(where: {
+                $0.name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current) == key
+            }) {
+                guard names[index].isConfirmedByUser != true else { continue }
+                if names[index].side != confirmed.side || names[index].nameColorHEX != confirmed.hex {
+                    names[index].side = confirmed.side
+                    names[index].nameColorHEX = confirmed.hex
+                }
+            } else if names.count < 64 {
+                names.append(RosterName(name: name, side: confirmed.side,
+                                        nameColorHEX: confirmed.hex, isConfirmedByUser: false))
+            }
+            autoStatus = "رُصد \(name) بلون \(candidate.side == .opponent ? "أحمر" : "أزرق") — تصنيف تلقائي قابل للتصحيح."
+            if confirmed.side == .opponent, let color = UIColor(hexRGB: confirmed.hex) {
+                // Select marker hue only. Never arm assistance or initiate controller actions.
+                let ai = AIAnalysisState.shared
+                if !ai.colorMode { ai.colorMode = true }
+                if abs(ai.colorHue - color.hueValue) > 0.008 { ai.colorHue = color.hueValue }
+            }
+        }
+    }
+
+    /// Manual selection explicitly overrides future automatic guesses.
     func saveSelectedOpponent(name: String, colorHEX: String) {
         let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard clean.count >= 2, clean.count <= 64,
@@ -309,14 +384,18 @@ final class MatchRoster: ObservableObject {
         if let index = names.firstIndex(where: { $0.name.localizedCaseInsensitiveCompare(clean) == .orderedSame }) {
             names[index].side = .opponent
             names[index].nameColorHEX = normalizedColor
+            names[index].isConfirmedByUser = true
         } else {
-            names.append(RosterName(name: clean, side: .opponent, nameColorHEX: normalizedColor))
+            names.append(RosterName(name: clean, side: .opponent, nameColorHEX: normalizedColor,
+                                    isConfirmedByUser: true))
         }
         message = "حُفظ \(clean) في الخصوم مع لون الاسم \(normalizedColor). راجع الانتماء للفريق يدويًا."
     }
     func reset() {
         generation = UUID()
+        pending.removeAll()
         names = []; reading = false; matchNumber += 1
+        autoStatus = "بدأت مباراة جديدة. سيُعاد اكتشاف أسماء الفريقين."
         message = "تم مسح بيانات المباراة السابقة."
     }
     func read(_ data: Data) async {
@@ -367,8 +446,12 @@ struct MatchRosterView: View {
             VStack(spacing: 16) {
                 VelmiraSection("قائمة المباراة \(roster.matchNumber)") {
                     Text("قراءة أسماء لوحة النتائج بالذكاء الاصطناعي على جهازك.")
-                    Text("التصنيف التلقائي للفريقين واكتشاف بداية المباراة لم يُفعّلا بعد. هذه القائمة لا تتحكم بالتصويب.")
+                    Toggle("التقاط أسماء اللاعبين تلقائيًا أثناء بث PS5", isOn: $roster.autoScanEnabled)
+                    Text("الأحمر الغامق = الخصوم، الأزرق = فريقي. يتطلب تكرار الاسم في لقطتين على الأقل؛ التصنيف تقريبي ويحتاج مراجعة.")
                         .font(.footnote).foregroundStyle(.orange)
+                    Text(roster.autoStatus).font(.footnote)
+                    Text("بدء مباراة جديدة لا يُكتشف تلقائيًا بعد؛ استخدم زر مسح القائمتين عند تغيير المباراة.")
+                        .font(.footnote)
                     PhotosPicker(selection: $photo, matching: .images) {
                         Label("قراءة صورة لوحة النتائج", systemImage: "text.viewfinder")
                             .frame(maxWidth: .infinity, minHeight: 48)
@@ -440,7 +523,10 @@ private struct RosterEntryEditor: View {
             HStack {
                 Menu {
                     ForEach(RosterSide.allCases) { choice in
-                        Button(choice.rawValue) { entry.side = choice }
+                        Button(choice.rawValue) {
+                            entry.side = choice
+                            entry.isConfirmedByUser = true
+                        }
                     }
                 } label: {
                     Label(entry.side.rawValue, systemImage: "person.2")
