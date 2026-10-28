@@ -120,10 +120,14 @@ private enum VelmiraSettingsTransfer {
         }
         let resource = try? url.resourceValues(forKeys: [.isRegularFileKey])
         guard resource?.isRegularFile != false,
-              let data = try? Data(contentsOf: url),
-              data.count <= 1_048_576 else {
+              let data = try? Data(contentsOf: url) else {
             throw VelmiraImportError.cannotRead
         }
+        try importData(data)
+    }
+
+    static func importData(_ data: Data) throws {
+        guard data.count <= 1_048_576 else { throw VelmiraImportError.tooLarge }
         let decoder = JSONDecoder()
         guard let profile = try? decoder.decode(VelmiraSettingsPackage.self, from: data) else {
             throw VelmiraImportError.wrongFormat
@@ -258,8 +262,48 @@ private enum VelmiraSettingsTransfer {
     }
 }
 
+/// UIKit picker is used instead of SwiftUI.fileImporter because some iPhones
+/// cannot select otherwise valid JSON files from the Files provider.
+private struct VelmiraJSONPicker: UIViewControllerRepresentable {
+    var onPicked: (URL) -> Void
+    var onCancel: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(onPicked: onPicked, onCancel: onCancel) }
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.item, .data, .json], asCopy: true)
+        picker.delegate = context.coordinator
+        picker.allowsMultipleSelection = false
+        picker.shouldShowFileExtensions = true
+        return picker
+    }
+
+    func updateUIViewController(_ picker: UIDocumentPickerViewController, context: Context) {}
+
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let onPicked: (URL) -> Void
+        let onCancel: () -> Void
+
+        init(onPicked: @escaping (URL) -> Void, onCancel: @escaping () -> Void) {
+            self.onPicked = onPicked
+            self.onCancel = onCancel
+        }
+
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            if let url = urls.first { onPicked(url) }
+            else { onCancel() }
+        }
+
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            onCancel()
+        }
+    }
+}
+
 struct HomeView: View {
     @State private var showImportPicker = false
+    @State private var showPasteSettings = false
+    @State private var pastedSettingsJSON = ""
     @State private var showExportPicker = false
     @State private var exportDocument: VelmiraSettingsDocument?
     @State private var settingsTransferNotice = ""
@@ -298,6 +342,14 @@ struct HomeView: View {
                         }
                         .buttonStyle(AcidButtonStyle(active: true))
                         Button {
+                            pastedSettingsJSON = ""
+                            showPasteSettings = true
+                        } label: {
+                            Label("لود من النص — لصق JSON", systemImage: "doc.on.clipboard")
+                                .frame(maxWidth: .infinity, minHeight: 48)
+                        }
+                        .buttonStyle(AcidButtonStyle())
+                        Button {
                             do {
                                 exportDocument = try VelmiraSettingsTransfer.exportCurrent()
                                 settingsTransferNotice = ""
@@ -331,24 +383,68 @@ struct HomeView: View {
             }
             .background(TPPlayTheme.canvas)
             .toolbar(.hidden, for: .navigationBar)
-            // Files / iCloud / ChatGPT downloads may identify a .json file as
-            // generic data rather than public.json. Allow picking any file here;
-            // importFile performs size, JSON schema and numeric-range validation
-            // before it applies or saves user preferences.
-            .fileImporter(isPresented: $showImportPicker, allowedContentTypes: [.item]) { result in
-                switch result {
-                case .success(let url):
+            .sheet(isPresented: $showImportPicker) {
+                VelmiraJSONPicker(onPicked: { url in
+                    // A copy of the selected file is passed by the system picker.
                     do {
                         try VelmiraSettingsTransfer.importFile(at: url)
                         settingsTransferFailed = false
-                        settingsTransferNotice = "تم تحميل الإعدادات وحفظها بنجاح. التفعيل اليدوي للمساعدة يبقى متوقفًا."
+                        settingsTransferNotice = "تم تحميل الإعدادات وحفظها بنجاح. تشغيل المساعدة يبقى يدويًا."
                     } catch {
                         settingsTransferFailed = true
                         settingsTransferNotice = error.localizedDescription
                     }
-                case .failure(let error):
-                    settingsTransferFailed = true
-                    settingsTransferNotice = error.localizedDescription
+                    showImportPicker = false
+                }, onCancel: {
+                    showImportPicker = false
+                })
+                .ignoresSafeArea()
+            }
+            .sheet(isPresented: $showPasteSettings) {
+                NavigationStack {
+                    VStack(alignment: .leading, spacing: 14) {
+                        Text("الصق النص الكامل لملف Velmira-Settings.json أدناه. يتم التحقق منه قبل حفظ أي إعداد.")
+                            .font(.footnote)
+                        Button {
+                            pastedSettingsJSON = UIPasteboard.general.string ?? ""
+                        } label: {
+                            Label("لصق من الحافظة", systemImage: "doc.on.clipboard")
+                                .frame(maxWidth: .infinity, minHeight: 46)
+                        }
+                        .buttonStyle(.bordered)
+                        TextEditor(text: $pastedSettingsJSON)
+                            .font(.system(.caption, design: .monospaced))
+                            .environment(\.layoutDirection, .leftToRight)
+                            .frame(minHeight: 170)
+                            .overlay(RoundedRectangle(cornerRadius: 10).stroke(.secondary.opacity(0.4)))
+                        Button {
+                            do {
+                                let data = Data(pastedSettingsJSON.utf8)
+                                try VelmiraSettingsTransfer.importData(data)
+                                settingsTransferFailed = false
+                                settingsTransferNotice = "تم تحميل الإعدادات من النص وحفظها بنجاح."
+                                pastedSettingsJSON = ""
+                                showPasteSettings = false
+                            } catch {
+                                settingsTransferFailed = true
+                                settingsTransferNotice = error.localizedDescription
+                                showPasteSettings = false
+                            }
+                        } label: {
+                            Label("لود وحفظ جميع الإعدادات", systemImage: "square.and.arrow.down")
+                                .frame(maxWidth: .infinity, minHeight: 50)
+                        }
+                        .buttonStyle(AcidButtonStyle(active: true))
+                        .disabled(pastedSettingsJSON.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                    .padding()
+                    .navigationTitle("لود الإعدادات من النص")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarLeading) {
+                            Button("إلغاء") { showPasteSettings = false }
+                        }
+                    }
                 }
             }
             .fileExporter(isPresented: $showExportPicker, document: exportDocument,
