@@ -9,7 +9,8 @@ struct RemotePlayView: View {
     @ObservedObject private var touchLayouts = TouchLayoutStore.shared
     @ObservedObject private var aiAnalysis = AIAnalysisState.shared
     @ObservedObject private var assistance = AssistanceState.shared
-    @AppStorage("velmira.showMetrics.compact.v2") private var showMetrics = false
+    @State private var showMetrics = UserDefaults.standard.object(forKey: "velmira.showMetrics.compact.v2") as? Bool ?? false
+    @State private var savedStreamNotice = ""
     @State private var calibrationShot: CalibrationShot?
     @State private var playerNameShot: CalibrationShot?
     @State private var calibrationError = false
@@ -156,6 +157,7 @@ struct RemotePlayView: View {
         }
         .onAppear {
             TPPlayOrientation.set(.landscape)
+            showMetrics = UserDefaults.standard.object(forKey: "velmira.showMetrics.compact.v2") as? Bool ?? false
             AIFrameAnalyzer.shared.setPaused(false)
             session.resumeAssistance()
             let controllers = GCController.controllers()
@@ -178,6 +180,9 @@ struct RemotePlayView: View {
         }
         .onDisappear {
             TPPlayOrientation.set(.portrait)
+            AssistanceState.shared.restoreSavedSettings()
+            AIAnalysisState.shared.restoreSavedSettings()
+            touchLayouts.restoreSavedLayouts()
             GCController.stopWirelessControllerDiscovery()
             UIApplication.shared.isIdleTimerDisabled = false
             session.stop()
@@ -237,6 +242,24 @@ struct RemotePlayView: View {
                         showsVirtualControls = true
                         isChoosingTouchLayout = true
                     }
+                    Button("حفظ إعدادات البث", systemImage: "square.and.arrow.down") {
+                        let a = AssistanceState.shared.saveSettings()
+                        let b = AIAnalysisState.shared.saveSettings()
+                        let c = touchLayouts.saveLayouts()
+                        if a && b && c {
+                            UserDefaults.standard.set(showMetrics, forKey: "velmira.showMetrics.compact.v2")
+                            savedStreamNotice = "تم حفظ إعدادات البث."
+                        } else {
+                            savedStreamNotice = "تعذر حفظ بعض الإعدادات."
+                        }
+                    }
+                    Button("استعادة إعدادات البث", systemImage: "arrow.counterclockwise") {
+                        AssistanceState.shared.restoreSavedSettings()
+                        AIAnalysisState.shared.restoreSavedSettings()
+                        touchLayouts.restoreSavedLayouts()
+                        showMetrics = UserDefaults.standard.object(forKey: "velmira.showMetrics.compact.v2") as? Bool ?? false
+                        savedStreamNotice = "تم استعادة آخر إعدادات محفوظة."
+                    }
                 } label: {
                     Label("الأدوات", systemImage: "slider.horizontal.3")
                         .padding(.horizontal, 13)
@@ -277,6 +300,13 @@ struct RemotePlayView: View {
                     performancePanel
                         .frame(maxWidth: 230)
                 }
+            }
+            if !savedStreamNotice.isEmpty {
+                Text(savedStreamNotice)
+                    .font(.system(size: 10, weight: .medium))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(.black.opacity(0.64), in: Capsule())
             }
             if !assistance.armed, let reason = assistance.lastStopReason {
                 Text("المساعدة متوقفة: \(reason)")
@@ -511,9 +541,20 @@ struct RemotePlayView: View {
                 .frame(width: 240, height: 42)
                 .background(TPPlayTheme.surface.opacity(0.9))
                 .overlay { Rectangle().stroke(TPPlayTheme.violet, lineWidth: 1) }
-            Button("DONE") { isEditingTouchLayout = false }
-                .frame(width: 92, height: 42)
-                .buttonStyle(AcidButtonStyle(active: true))
+            Button("إلغاء") {
+                touchLayouts.restoreSavedLayouts()
+                isEditingTouchLayout = false
+            }
+            .frame(width: 76, height: 42)
+            .buttonStyle(AcidButtonStyle())
+            Button("حفظ") {
+                if touchLayouts.saveLayouts() {
+                    savedStreamNotice = "تم حفظ أماكن أزرار اللمس."
+                    isEditingTouchLayout = false
+                }
+            }
+            .frame(width: 76, height: 42)
+            .buttonStyle(AcidButtonStyle(active: true))
         }
         .padding(.bottom, 8)
     }
