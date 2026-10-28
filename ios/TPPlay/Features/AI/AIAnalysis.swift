@@ -34,6 +34,48 @@ final class AIAnalysisState: ObservableObject {
     @Published var threshold = 0.6 { didSet { configure() } }
     @Published var rate = 3.0 { didSet { configure() } }
     @Published private(set) var result: HumanAnalysis?
+    private struct SavedAISettings: Codable {
+        var colorMode: Bool
+        var hybridMode: Bool
+        var precisionMode: Bool
+        var colorHue: Double
+        var colorTolerance: Double
+        var enabled: Bool
+        var threshold: Double
+        var rate: Double
+    }
+    private let settingsKey = "velmira.ai.explicitSave.v1"
+
+    private init() {
+        restoreSavedSettings()
+    }
+
+    @discardableResult
+    func saveSettings() -> Bool {
+        let value = SavedAISettings(colorMode: colorMode, hybridMode: hybridMode,
+                                    precisionMode: precisionMode, colorHue: colorHue,
+                                    colorTolerance: colorTolerance, enabled: enabled,
+                                    threshold: threshold, rate: rate)
+        guard let data = try? JSONEncoder().encode(value) else { return false }
+        UserDefaults.standard.set(data, forKey: settingsKey)
+        return true
+    }
+
+    func restoreSavedSettings() {
+        guard let data = UserDefaults.standard.data(forKey: settingsKey),
+              let value = try? JSONDecoder().decode(SavedAISettings.self, from: data) else {
+            return
+        }
+        colorMode = value.colorMode
+        hybridMode = value.hybridMode
+        precisionMode = value.precisionMode
+        colorHue = value.colorHue
+        colorTolerance = value.colorTolerance
+        enabled = value.enabled
+        threshold = value.threshold
+        rate = value.rate
+    }
+
     func configure() {
         AIFrameAnalyzer.shared.configure(enabled: enabled, threshold: Float(threshold), rate: rate,
             colorMode: colorMode, hybridMode: hybridMode,
@@ -219,6 +261,7 @@ struct AIAnalysisOverlay: View {
 
 struct AIAnalysisSettings: View {
     @ObservedObject private var model = AIAnalysisState.shared
+    @State private var savedNotice = ""
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -267,6 +310,27 @@ struct AIAnalysisSettings: View {
                         Text("8").tag(8.0)
                     }.pickerStyle(.segmented)
                     Text("لا تعني هذه القيم معدل إطارات اللعبة. يُخفَّض التحليل تلقائيًا عند ارتفاع حرارة الجهاز.")
+                }
+                VelmiraSection("حفظ إعدادات الذكاء الاصطناعي") {
+                    Button {
+                        if model.saveSettings() && AssistanceState.shared.saveSettings() {
+                            savedNotice = "تم حفظ إعدادات الذكاء الاصطناعي واللون حتى بعد إغلاق التطبيق."
+                        } else {
+                            savedNotice = "تعذر حفظ الإعدادات."
+                        }
+                    } label: {
+                        Label("حفظ الإعدادات", systemImage: "square.and.arrow.down")
+                            .frame(maxWidth: .infinity, minHeight: 50)
+                    }
+                    .buttonStyle(AcidButtonStyle(active: true))
+                    Text(savedNotice.isEmpty
+                         ? "التغييرات مؤقتة ما لم تضغط زر حفظ الإعدادات."
+                         : savedNotice)
+                        .font(.footnote)
+                    Button("استعادة آخر إعدادات محفوظة") {
+                        model.restoreSavedSettings()
+                        savedNotice = "تم استعادة الإعدادات المحفوظة."
+                    }
                 }
                 VelmiraSection("حالة التحليل") {
                     TimelineView(.periodic(from: .now, by: 0.5)) { _ in
