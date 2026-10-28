@@ -321,6 +321,11 @@ struct HomeView: View {
                         VelmiraAdvancedSettings()
                     } label: { settingsCard("جودة الفيديو والحساب", subtitle: "الدقة والإطارات وربط PlayStation", icon: "tv") }
                     NavigationLink {
+                        MW3WeaponCatalogView()
+                    } label: {
+                        settingsCard("أسلحة MW3", subtitle: "الأسلحة والصور وإعدادات كل سلاح و6 اختصارات للبث", icon: "scope")
+                    }
+                    NavigationLink {
                         TouchLayoutSettingsView()
                     } label: { settingsCard("أزرار اللمس", subtitle: "ترتيب أدوات التحكم على الشاشة", icon: "hand.tap") }
                     NavigationLink {
