@@ -11,6 +11,9 @@ struct HumanDetection: Identifiable, Sendable {
     let confidence: Float
     /// Additional human-rectangle evidence, not a calibrated accuracy score.
     var humanSupported = false
+    /// An optional person rectangle linked visually to a colored nameplate.
+    /// Missing or ambiguous associations must not create a body-point marker.
+    var matchedPersonBox: CGRect? = nil
 }
 struct HumanAnalysis: Sendable {
     let detections: [HumanDetection]
@@ -26,6 +29,7 @@ final class AIAnalysisState: ObservableObject {
     static let shared = AIAnalysisState()
     @Published var colorMode = false { didSet { configure() } }
     @Published var hybridMode = true { didSet { configure() } }
+    @Published var adaptiveBodyMarker = true { didSet { configure() } }
     @Published var precisionMode = true { didSet { configure() } }
     private var persistence = StableDetectionFilter()
     @Published var colorHue = 0.0 { didSet { configure() } }
@@ -45,6 +49,7 @@ final class AIAnalysisState: ObservableObject {
         var rate: Double
     }
     private let settingsKey = "velmira.ai.explicitSave.v1"
+    private let adaptiveMarkerKey = "velmira.ai.bodyMarker.v1"
 
     private init() {
         restoreSavedSettings()
@@ -58,10 +63,12 @@ final class AIAnalysisState: ObservableObject {
                                     threshold: threshold, rate: rate)
         guard let data = try? JSONEncoder().encode(value) else { return false }
         UserDefaults.standard.set(data, forKey: settingsKey)
+        UserDefaults.standard.set(adaptiveBodyMarker, forKey: adaptiveMarkerKey)
         return true
     }
 
     func restoreSavedSettings() {
+        adaptiveBodyMarker = UserDefaults.standard.object(forKey: adaptiveMarkerKey) as? Bool ?? true
         guard let data = UserDefaults.standard.data(forKey: settingsKey),
               let value = try? JSONDecoder().decode(SavedAISettings.self, from: data) else {
             return
@@ -79,6 +86,7 @@ final class AIAnalysisState: ObservableObject {
     func configure() {
         AIFrameAnalyzer.shared.configure(enabled: enabled, threshold: Float(threshold), rate: rate,
             colorMode: colorMode, hybridMode: hybridMode,
+            adaptiveBodyMarker: adaptiveBodyMarker,
             color: ColorTrackingConfiguration(hue: colorHue, tolerance: colorTolerance))
         result = nil
         persistence.reset()
@@ -94,7 +102,8 @@ final class AIAnalysisState: ObservableObject {
         let confirmed = confirmations.map { match -> HumanDetection in
             let item = value.detections[match.index]
             return HumanDetection(id: match.id, box: item.box, confidence: item.confidence,
-                                  humanSupported: item.humanSupported)
+                                  humanSupported: item.humanSupported,
+                                  matchedPersonBox: item.matchedPersonBox)
         }
         result = HumanAnalysis(detections: confirmed, imageSize: value.imageSize,
                                capturedAt: value.capturedAt,
@@ -123,12 +132,17 @@ final class AIFrameAnalyzer: @unchecked Sendable {
     private var rate = 3.0
     private var colorMode = false
     private var hybridMode = true
+    private var adaptiveBodyMarker = true
     private var color = ColorTrackingConfiguration()
     private var previousTime: TimeInterval = 0
     func configure(enabled: Bool, threshold: Float, rate: Double, colorMode: Bool,
-                   hybridMode: Bool, color: ColorTrackingConfiguration) {
+                   hybridMode: Bool, adaptiveBodyMarker: Bool,
+                   color: ColorTrackingConfiguration) {
         lock.lock(); defer { lock.unlock() }
-        self.colorMode = colorMode; self.hybridMode = hybridMode; self.color = color
+        self.colorMode = colorMode
+        self.hybridMode = hybridMode
+        self.adaptiveBodyMarker = adaptiveBodyMarker
+        self.color = color
         self.enabled = enabled; self.threshold = min(0.95, max(0.2, threshold))
         self.rate = min(8, max(1, rate)); generation &+= 1
     }
@@ -153,7 +167,9 @@ final class AIFrameAnalyzer: @unchecked Sendable {
         guard enabled && !paused && !busy && now - previousTime >= 1 / effectiveRate else { lock.unlock(); return }
         busy = true; previousTime = now
         let token = generation; let minimum = threshold
-        let useColor = colorMode; let useHybrid = hybridMode
+        let useColor = colorMode
+        let useHybrid = hybridMode
+        let showAdaptiveMarker = adaptiveBodyMarker
         let colorConfiguration = color
         lock.unlock()
         let frame = RetainedVideoFrame(pixelBuffer)
@@ -168,7 +184,7 @@ final class AIFrameAnalyzer: @unchecked Sendable {
                 if useColor {
                     let colorBoxes = try ColorTargetDetector.detect(frame.buffer, configuration: colorConfiguration)
                     var people = [CGRect]()
-                    if useHybrid && !colorBoxes.isEmpty {
+                    if (useHybrid || showAdaptiveMarker) && !colorBoxes.isEmpty {
                         let personRequest = VNDetectHumanRectanglesRequest()
                         personRequest.upperBodyOnly = false
                         do {
@@ -182,14 +198,10 @@ final class AIFrameAnalyzer: @unchecked Sendable {
                         }
                     }
                     detections = colorBoxes.map { marker in
-                        let supported = people.contains { human in
-                            marker.midX >= human.minX - 0.06 &&
-                            marker.midX <= human.maxX + 0.06 &&
-                            marker.maxY >= human.midY - 0.06 &&
-                            marker.minY <= human.maxY + 0.16
-                        }
+                        let match = VisualBodyAssociation.bestPerson(for: marker, among: people)
                         return HumanDetection(id: UUID(), box: marker, confidence: 0,
-                                              humanSupported: supported)
+                                              humanSupported: match != nil,
+                                              matchedPersonBox: match)
                     }
                 } else {
                     let request = VNDetectHumanRectanglesRequest()
@@ -197,7 +209,8 @@ final class AIFrameAnalyzer: @unchecked Sendable {
                     let handler = VNImageRequestHandler(cvPixelBuffer: frame.buffer, orientation: .up, options: [:])
                     try handler.perform([request])
                     detections = (request.results ?? []).filter { $0.confidence >= minimum }.map {
-                        HumanDetection(id: UUID(), box: $0.boundingBox, confidence: $0.confidence)
+                        HumanDetection(id: UUID(), box: $0.boundingBox, confidence: $0.confidence,
+                                       humanSupported: true, matchedPersonBox: $0.boundingBox)
                     }
                 }
                 report = HumanAnalysis(detections: detections, imageSize: size, capturedAt: now,
