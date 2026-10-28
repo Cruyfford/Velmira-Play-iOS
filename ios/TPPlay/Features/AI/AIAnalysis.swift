@@ -557,3 +557,151 @@ private struct RosterEntryEditor: View {
         }
     }
 }
+
+
+/// Low-rate, read-only scoreboard/nameplate OCR. Classification is provisional.
+/// This component never sends controller input or enables any assistance mode.
+final class AutoRosterScanner: @unchecked Sendable {
+    static let shared = AutoRosterScanner()
+
+    private let lock = NSLock()
+    private let queue = DispatchQueue(label: "app.velmira.roster.ocr", qos: .utility)
+    private var enabled = true
+    private var paused = true
+    private var busy = false
+    private var lastRun: TimeInterval = 0
+    private var generation: UInt64 = 0
+
+    func configure(enabled: Bool) {
+        lock.lock()
+        self.enabled = enabled
+        generation &+= 1
+        lock.unlock()
+    }
+
+    func setPaused(_ pause: Bool) {
+        lock.lock()
+        paused = pause
+        generation &+= 1
+        lock.unlock()
+    }
+
+    private func active(_ token: UInt64) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return enabled && !paused && generation == token
+    }
+
+    func submit(_ buffer: CVPixelBuffer) {
+        let now = ProcessInfo.processInfo.systemUptime
+        let state = ProcessInfo.processInfo.thermalState
+        let interval: TimeInterval = (state == .serious || state == .critical) ? 3 : 1.5
+        lock.lock()
+        guard enabled && !paused && !busy && now - lastRun >= interval else {
+            lock.unlock()
+            return
+        }
+        busy = true
+        lastRun = now
+        let token = generation
+        lock.unlock()
+
+        let frame = RetainedVideoFrame(buffer)
+        queue.async { [self, frame] in
+            defer {
+                lock.lock()
+                busy = false
+                lock.unlock()
+            }
+            guard active(token) else { return }
+
+            let request = VNRecognizeTextRequest()
+            request.recognitionLevel = .fast
+            request.usesLanguageCorrection = false
+            do {
+                try VNImageRequestHandler(cvPixelBuffer: frame.buffer, orientation: .up, options: [:])
+                    .perform([request])
+                guard active(token) else { return }
+                let observations = (request.results ?? []).filter { observation in
+                    let box = observation.boundingBox
+                    return box.width > 0.018 && box.width < 0.32 &&
+                           box.height > 0.008 && box.height < 0.065
+                }
+                guard !observations.isEmpty else { return }
+
+                let ci = CIImage(cvPixelBuffer: frame.buffer)
+                guard let image = CIContext(options: [.useSoftwareRenderer: false])
+                    .createCGImage(ci, from: ci.extent) else { return }
+
+                let candidates = observations.compactMap { item -> AutoRosterCandidate? in
+                    guard let recognized = item.topCandidates(1).first,
+                          recognized.confidence >= 0.55 else { return nil }
+                    let name = recognized.string.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard name.count >= 2, name.count <= 24,
+                          name.rangeOfCharacter(from: .letters) != nil,
+                          !name.contains("\n") else { return nil }
+                    guard let detected = Self.readNameColor(in: image, box: item.boundingBox) else {
+                        return nil
+                    }
+                    return AutoRosterCandidate(name: name, side: detected.side, hex: detected.hex)
+                }
+                guard !candidates.isEmpty, active(token) else { return }
+                Task { @MainActor in
+                    guard self.active(token) else { return }
+                    MatchRoster.shared.acceptAutoCandidates(candidates, sampledAt: now)
+                }
+            } catch {
+                // OCR failures do not interrupt the live video session.
+            }
+        }
+    }
+
+    private static func readNameColor(in image: CGImage, box: CGRect)
+        -> (side: RosterSide, hex: String)? {
+        let rect = CGRect(x: box.minX * CGFloat(image.width),
+                          y: (1 - box.maxY) * CGFloat(image.height),
+                          width: box.width * CGFloat(image.width),
+                          height: box.height * CGFloat(image.height)).integral
+            .intersection(CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        guard !rect.isNull, rect.width >= 4, rect.height >= 3,
+              let cropped = image.cropping(to: rect) else { return nil }
+        let w = min(96, cropped.width)
+        let h = min(24, cropped.height)
+        var pixels = [UInt8](repeating: 0, count: w * h * 4)
+        let rendered = pixels.withUnsafeMutableBytes { raw -> Bool in
+            guard let ctx = CGContext(data: raw.baseAddress, width: w, height: h,
+                                      bitsPerComponent: 8, bytesPerRow: w * 4,
+                                      space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+            else { return false }
+            ctx.draw(cropped, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        guard rendered else { return nil }
+
+        var redCount = 0, blueCount = 0
+        var red = (0, 0, 0), blue = (0, 0, 0)
+        for i in stride(from: 0, to: pixels.count, by: 4) {
+            let r = Int(pixels[i]), g = Int(pixels[i+1]), b = Int(pixels[i+2])
+            if r >= 52 && r > Int(Double(g) * 1.45) && r > Int(Double(b) * 1.4) {
+                redCount += 1
+                red.0 += r; red.1 += g; red.2 += b
+            } else if b >= 65 && b > Int(Double(r) * 1.35) &&
+                      b > Int(Double(g) * 1.1) {
+                blueCount += 1
+                blue.0 += r; blue.1 += g; blue.2 += b
+            }
+        }
+        // Avoid ambiguous mixed-color names and backgrounds.
+        guard max(redCount, blueCount) >= 4 else { return nil }
+        if redCount >= blueCount * 3 && redCount >= 4 {
+            return (.opponent, String(format: "#%02X%02X%02X",
+                                     red.0 / redCount, red.1 / redCount, red.2 / redCount))
+        }
+        if blueCount >= redCount * 3 && blueCount >= 4 {
+            return (.friendly, String(format: "#%02X%02X%02X",
+                                     blue.0 / blueCount, blue.1 / blueCount, blue.2 / blueCount))
+        }
+        return nil
+    }
+}
