@@ -111,7 +111,9 @@ struct AssistanceSettings: View {
                         Button("الرجل") { model.configuration.pointX = 0.5; model.configuration.pointY = 0.88 }
                     }.buttonStyle(.bordered)
                     BodyPointPicker(x: $model.configuration.pointX, y: $model.configuration.pointY, hue: vision.colorHue)
-                    Text("النقطة الملونة تمثل علامة الاسم. اسحب الدائرة السماوية لتحديد موضع الجسم في وضع كشف الأشخاص. في وضع اللون اضبط الإزاحة أسفل الاسم من القسم التالي؛ الرسم توضيحي وليس معايرة لمسافة الخصم.").font(.footnote)
+                    Toggle("إظهار النقطة المحددة على جسم اللاعب تلقائيًا", isOn: $vision.adaptiveBodyMarker)
+                    Text("اختر الرأس أو البطن أو الرجل، أو اسحب النقطة إلى موضع مخصص. إذا أمكن ربط الاسم الملون بشخص ظاهر، تتحرك نقطة المعاينة مع جسمه وتتكيف مع حجمه عند الاقتراب والابتعاد. عند عدم التعرف على الشخص لن يظهر موضع متخيل.")
+                        .font(.footnote)
                 }
                 VelmiraSection("إذا كان اللون فوق الرأس") {
                     valueSlider("الإزاحة الأفقية من الاسم", value: $model.configuration.colorOffsetX, range: -0.3...0.3)
