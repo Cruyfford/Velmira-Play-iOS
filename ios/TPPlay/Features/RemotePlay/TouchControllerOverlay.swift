@@ -83,6 +83,7 @@ final class TouchLayoutStore: ObservableObject {
     @Published private(set) var presets: [TouchLayoutPreset]
     @Published private(set) var activePresetID: UUID
     @Published private(set) var revision = 0
+    @Published private(set) var hasUnsavedChanges = false
 
     private static let storageKey = "tpplay.touchLayouts.v2"
     private static let legacyStorageKey = "tpplay.touchLayout.v1"
@@ -124,7 +125,7 @@ final class TouchLayoutStore: ObservableObject {
         guard presets.contains(where: { $0.id == id }), activePresetID != id else { return }
         activePresetID = id
         revision += 1
-        persist()
+        hasUnsavedChanges = true
     }
 
     @discardableResult
@@ -134,7 +135,7 @@ final class TouchLayoutStore: ObservableObject {
         let item = TouchLayoutPreset(id: UUID(), name: name, layout: sourceLayout)
         presets.append(item)
         revision += 1
-        persist()
+        hasUnsavedChanges = true
         return item.id
     }
 
@@ -142,7 +143,7 @@ final class TouchLayoutStore: ObservableObject {
         guard let index = presets.firstIndex(where: { $0.id == id }) else { return }
         presets[index].name = normalizedName(rawName, fallback: presets[index].name)
         revision += 1
-        persist()
+        hasUnsavedChanges = true
     }
 
     func delete(_ id: UUID) {
@@ -150,18 +151,38 @@ final class TouchLayoutStore: ObservableObject {
         presets.remove(at: index)
         if activePresetID == id { activePresetID = presets[min(index, presets.count - 1)].id }
         revision += 1
-        persist()
+        hasUnsavedChanges = true
     }
 
     func updateLayout(_ layout: StoredTouchLayout, for id: UUID) {
         guard let index = presets.firstIndex(where: { $0.id == id }), presets[index].layout != layout else { return }
         presets[index].layout = layout
         revision += 1
-        persist()
+        hasUnsavedChanges = true
     }
 
     func resetLayout(for id: UUID) {
         updateLayout(StoredTouchLayout(), for: id)
+    }
+
+    @discardableResult
+    func saveLayouts() -> Bool {
+        let archive = StoredTouchLayoutArchive(presets: presets, activePresetID: activePresetID)
+        guard let data = try? JSONEncoder().encode(archive) else { return false }
+        UserDefaults.standard.set(data, forKey: Self.storageKey)
+        hasUnsavedChanges = false
+        return true
+    }
+
+    func restoreSavedLayouts() {
+        guard let data = UserDefaults.standard.data(forKey: Self.storageKey),
+              let archive = try? JSONDecoder().decode(StoredTouchLayoutArchive.self, from: data),
+              !archive.presets.isEmpty else { return }
+        presets = archive.presets
+        activePresetID = archive.presets.contains(where: { $0.id == archive.activePresetID })
+            ? archive.activePresetID : archive.presets[0].id
+        revision += 1
+        hasUnsavedChanges = false
     }
 
     private func normalizedName(_ rawName: String, fallback: String) -> String {
