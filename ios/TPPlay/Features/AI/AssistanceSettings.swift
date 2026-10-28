@@ -12,7 +12,8 @@ final class AssistanceState: ObservableObject {
         didSet { if armed { lastStopReason = nil } }
     }
     @Published private(set) var lastStopReason: String?
-    @Published var configuration: AssistanceConfiguration { didSet { save() } }
+    // Edit in memory. Only the Save Settings button commits the configuration.
+    @Published var configuration: AssistanceConfiguration
     @Published private(set) var target: CGPoint?
     @Published private(set) var status = "متوقف"
     private init() {
@@ -21,9 +22,19 @@ final class AssistanceState: ObservableObject {
             configuration = value
         } else { configuration = AssistanceConfiguration() }
     }
-    private func save() {
-        if let data = try? JSONEncoder().encode(configuration) {
-            UserDefaults.standard.set(data, forKey: "velmira.assistance.v1")
+    @discardableResult
+    func saveSettings() -> Bool {
+        guard let data = try? JSONEncoder().encode(configuration) else { return false }
+        UserDefaults.standard.set(data, forKey: "velmira.assistance.v1")
+        return true
+    }
+
+    func restoreSavedSettings() {
+        if let data = UserDefaults.standard.data(forKey: "velmira.assistance.v1"),
+           let saved = try? JSONDecoder().decode(AssistanceConfiguration.self, from: data) {
+            configuration = saved
+        } else {
+            configuration = AssistanceConfiguration()
         }
     }
     func report(target: CGPoint?, status: String) {
@@ -41,6 +52,7 @@ final class AssistanceState: ObservableObject {
 struct AssistanceSettings: View {
     @ObservedObject private var model = AssistanceState.shared
     @ObservedObject private var vision = AIAnalysisState.shared
+    @State private var savedNotice = ""
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -120,11 +132,30 @@ struct AssistanceSettings: View {
                     valueSlider("رأسي", value: $model.configuration.recoilY, range: -0.3...0.3)
                     Text("ليس تثبيتًا مضمونًا لكل سلاح. اضبطه لكل حساسية وسلاح داخل ساحة تدريب.").font(.footnote)
                 }
-                VelmiraSection {
+                VelmiraSection("حفظ إعدادات التحكم") {
+                    Button {
+                        if model.saveSettings() && vision.saveSettings() {
+                            savedNotice = "تم حفظ إعدادات التحكم واللون. ستعود كما هي بعد إعادة تشغيل البرنامج."
+                        } else {
+                            savedNotice = "تعذر حفظ الإعدادات. حاول مجددًا."
+                        }
+                    } label: {
+                        Label("حفظ الإعدادات", systemImage: "square.and.arrow.down")
+                            .frame(maxWidth: .infinity, minHeight: 50)
+                    }
+                    .buttonStyle(AcidButtonStyle(active: true))
+                    Text(savedNotice.isEmpty ? "التغييرات مؤقتة حتى تضغط حفظ الإعدادات." : savedNotice)
+                        .font(.footnote)
+                    Button("استعادة آخر إعدادات محفوظة") {
+                        model.emergencyStop()
+                        model.restoreSavedSettings()
+                        vision.restoreSavedSettings()
+                        savedNotice = "تم استعادة آخر إعدادات محفوظة."
+                    }
                     Button("استعادة القيم الافتراضية", role: .destructive) {
                         model.emergencyStop(); model.configuration = AssistanceConfiguration()
                     }
-                    Text("تُحفظ الإعدادات محليًا، لكن التشغيل يبدأ متوقفًا كل مرة.")
+                    Text("تُحفظ الإعدادات بالزر أعلاه فقط. تفعيل المساعدة أثناء اللعب يبقى إجراءً يدويًا.")
                 }
             }
                 .padding(20)
@@ -132,6 +163,10 @@ struct AssistanceSettings: View {
             .background(TPPlayTheme.canvas)
             .navigationTitle("التحكم والمساعدة")
             .navigationBarTitleDisplayMode(.inline)
+            .onDisappear {
+                model.restoreSavedSettings()
+                vision.restoreSavedSettings()
+            }
             .toolbarBackground(TPPlayTheme.canvas, for: .navigationBar)
             .environment(\.layoutDirection, .rightToLeft)
         }
