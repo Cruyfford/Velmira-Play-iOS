@@ -45,8 +45,8 @@ enum VisualBodyAssociation {
     /// Selected relative body location, automatically scaling with visible size.
     /// Returns top-left normalized video coordinates for SwiftUI display.
     static func selectedPoint(in body: CGRect, x: Double, y: Double) -> CGPoint {
-        let px = min(1, max(0, x))
-        let py = min(1, max(0, y))
+        let px = CGFloat(min(1, max(0, x)))
+        let py = CGFloat(min(1, max(0, y)))
         return CGPoint(x: body.minX + body.width * px,
                        y: 1 - body.maxY + body.height * py)
     }
