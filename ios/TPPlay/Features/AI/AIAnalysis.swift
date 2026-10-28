@@ -617,6 +617,7 @@ struct MatchRosterView: View {
         .background(TPPlayTheme.canvas)
         .navigationTitle("الفريق والخصوم")
         .navigationBarTitleDisplayMode(.inline)
+        .onDisappear { roster.restoreAutoScanSetting() }
         .environment(\.layoutDirection, .rightToLeft)
         .confirmationDialog("مسح جميع أسماء المباراة السابقة؟", isPresented: $showReset, titleVisibility: .visible) {
             Button("بدء مباراة جديدة", role: .destructive) { roster.reset() }
