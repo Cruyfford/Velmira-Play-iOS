@@ -38,6 +38,8 @@ private struct VelmiraSettingsPackage: Codable {
     var stream: VelmiraPortableStream
     var touch: VelmiraPortableTouch
     var gameProfiles: [GameProfile]
+    // Optional for backwards compatibility with older shared JSON files.
+    var weapons: MW3WeaponArchive?
     var showMetrics: Bool
     var autoScanEnabled: Bool
 }
@@ -103,6 +105,7 @@ private enum VelmiraSettingsTransfer {
             touch: VelmiraPortableTouch(
                 presets: touch.presets, activePresetID: touch.activePresetID),
             gameProfiles: GameProfiles.shared.profiles,
+            weapons: MW3WeaponStore.shared.exportArchive(),
             showMetrics: defaults.object(forKey: "velmira.showMetrics.compact.v2") as? Bool ?? false,
             autoScanEnabled: MatchRoster.shared.autoScanEnabled)
         try validate(package)
@@ -165,6 +168,9 @@ private enum VelmiraSettingsTransfer {
         TouchLayoutStore.shared.restoreSavedLayouts()
         defaults.set(profilesData, forKey: "velmira.gameProfiles.v1")
         GameProfiles.shared.profiles = profile.gameProfiles
+        if let weapons = profile.weapons {
+            _ = MW3WeaponStore.shared.importArchive(weapons)
+        }
         MatchRoster.shared.autoScanEnabled = profile.autoScanEnabled
         MatchRoster.shared.saveAutoScanSetting()
     }
@@ -241,6 +247,9 @@ private enum VelmiraSettingsTransfer {
             if let right = preset.layout.rightStickSensitivity {
                 try check(right, 0.5...3, "حساسية العصا اليمنى")
             }
+        }
+        if let weapons = p.weapons, !MW3WeaponStore.canImport(weapons) {
+            throw VelmiraImportError.invalidValue("خانات وإعدادات أسلحة MW3")
         }
         guard p.gameProfiles.count <= 40,
               Set(p.gameProfiles.map(\.id)).count == p.gameProfiles.count else {
