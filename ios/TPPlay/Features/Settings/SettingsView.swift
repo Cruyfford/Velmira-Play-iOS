@@ -347,7 +347,7 @@ struct RemotePlayInternetSettingsView: View {
             VStack(alignment: .leading, spacing: 16) {
                 VelmiraSection("اتصال PS5 عبر 5G والإنترنت") {
                     Text("ربط الحساب هنا مختلف عن مزامنة الكؤوس. هذا الربط يتيح اختيار جهازك من قائمة PlayStation Network.")
-                    Text(remote.isSignedIn ? "حساب الاتصال البعيد: \\(remote.accountName ?? "PSN")" : "لم يتم ربط حساب الاتصال البعيد.")
+                    Text(remote.isSignedIn ? "حساب الاتصال البعيد: \(remote.accountName ?? "PSN")" : "لم يتم ربط حساب الاتصال البعيد.")
                         .foregroundStyle(remote.isSignedIn ? .green : .orange)
                     Button("1 — فتح تسجيل دخول Sony للاتصال البعيد") {
                         if let url = remote.authorizationURL() {
@@ -376,7 +376,7 @@ struct RemotePlayInternetSettingsView: View {
                         Text(status).font(.footnote)
                     }
                     if let error = remote.storageError {
-                        Text("تعذر فتح بيانات الاتصال الآمنة: \\(error)")
+                        Text("تعذر فتح بيانات الاتصال الآمنة: \(error)")
                             .font(.footnote).foregroundStyle(.red)
                     }
                 }
@@ -423,7 +423,7 @@ private struct RemoteConsoleSelectionRow: View {
     @ObservedObject var remote: RemoteCredentialStore
 
     var body: some View {
-        VelmiraSection("ربط \\(console.nickname) بجهاز PSN") {
+        VelmiraSection("ربط \(console.nickname) بجهاز PSN") {
             if remote.linkedDevices.isEmpty {
                 Text("افتح تسجيل الدخول أولًا ثم حدث أجهزة PSN.").font(.footnote)
             } else {
