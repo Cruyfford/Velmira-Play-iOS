@@ -9,6 +9,8 @@ struct HumanDetection: Identifiable, Sendable {
     let id: UUID
     let box: CGRect
     let confidence: Float
+    /// Additional human-rectangle evidence, not a calibrated accuracy score.
+    var humanSupported = false
 }
 struct HumanAnalysis: Sendable {
     let detections: [HumanDetection]
@@ -23,6 +25,7 @@ struct HumanAnalysis: Sendable {
 final class AIAnalysisState: ObservableObject {
     static let shared = AIAnalysisState()
     @Published var colorMode = false { didSet { configure() } }
+    @Published var hybridMode = true { didSet { configure() } }
     @Published var precisionMode = true { didSet { configure() } }
     private var persistence = StableDetectionFilter()
     @Published var colorHue = 0.0 { didSet { configure() } }
@@ -32,7 +35,8 @@ final class AIAnalysisState: ObservableObject {
     @Published var rate = 3.0 { didSet { configure() } }
     @Published private(set) var result: HumanAnalysis?
     func configure() {
-        AIFrameAnalyzer.shared.configure(enabled: enabled, threshold: Float(threshold), rate: rate, colorMode: colorMode,
+        AIFrameAnalyzer.shared.configure(enabled: enabled, threshold: Float(threshold), rate: rate,
+            colorMode: colorMode, hybridMode: hybridMode,
             color: ColorTrackingConfiguration(hue: colorHue, tolerance: colorTolerance))
         result = nil
         persistence.reset()
@@ -47,7 +51,8 @@ final class AIAnalysisState: ObservableObject {
         let confirmations = persistence.update(value.detections.map(\.box), at: value.capturedAt)
         let confirmed = confirmations.map { match -> HumanDetection in
             let item = value.detections[match.index]
-            return HumanDetection(id: match.id, box: item.box, confidence: item.confidence)
+            return HumanDetection(id: match.id, box: item.box, confidence: item.confidence,
+                                  humanSupported: item.humanSupported)
         }
         result = HumanAnalysis(detections: confirmed, imageSize: value.imageSize,
                                capturedAt: value.capturedAt,
@@ -75,11 +80,13 @@ final class AIFrameAnalyzer: @unchecked Sendable {
     private var threshold: Float = 0.6
     private var rate = 3.0
     private var colorMode = false
+    private var hybridMode = true
     private var color = ColorTrackingConfiguration()
     private var previousTime: TimeInterval = 0
-    func configure(enabled: Bool, threshold: Float, rate: Double, colorMode: Bool, color: ColorTrackingConfiguration) {
+    func configure(enabled: Bool, threshold: Float, rate: Double, colorMode: Bool,
+                   hybridMode: Bool, color: ColorTrackingConfiguration) {
         lock.lock(); defer { lock.unlock() }
-        self.colorMode = colorMode; self.color = color
+        self.colorMode = colorMode; self.hybridMode = hybridMode; self.color = color
         self.enabled = enabled; self.threshold = min(0.95, max(0.2, threshold))
         self.rate = min(8, max(1, rate)); generation &+= 1
     }
@@ -104,7 +111,8 @@ final class AIFrameAnalyzer: @unchecked Sendable {
         guard enabled && !paused && !busy && now - previousTime >= 1 / effectiveRate else { lock.unlock(); return }
         busy = true; previousTime = now
         let token = generation; let minimum = threshold
-        let useColor = colorMode; let colorConfiguration = color
+        let useColor = colorMode; let useHybrid = hybridMode
+        let colorConfiguration = color
         lock.unlock()
         let frame = RetainedVideoFrame(pixelBuffer)
         queue.async { [self, frame] in
@@ -116,8 +124,30 @@ final class AIFrameAnalyzer: @unchecked Sendable {
             do {
                 let detections: [HumanDetection]
                 if useColor {
-                    detections = try ColorTargetDetector.detect(frame.buffer, configuration: colorConfiguration).map {
-                        HumanDetection(id: UUID(), box: $0, confidence: 0) // Matching a hue is not a 100% model score.
+                    let colorBoxes = try ColorTargetDetector.detect(frame.buffer, configuration: colorConfiguration)
+                    var people = [CGRect]()
+                    if useHybrid && !colorBoxes.isEmpty {
+                        let personRequest = VNDetectHumanRectanglesRequest()
+                        personRequest.upperBodyOnly = false
+                        do {
+                            try VNImageRequestHandler(cvPixelBuffer: frame.buffer, orientation: .up, options: [:])
+                                .perform([personRequest])
+                            people = (personRequest.results ?? []).filter {
+                                $0.confidence >= minimum
+                            }.map { $0.boundingBox }
+                        } catch {
+                            // Preserve color-only observations if human detection fails.
+                        }
+                    }
+                    detections = colorBoxes.map { marker in
+                        let supported = people.contains { human in
+                            marker.midX >= human.minX - 0.06 &&
+                            marker.midX <= human.maxX + 0.06 &&
+                            marker.maxY >= human.midY - 0.06 &&
+                            marker.minY <= human.maxY + 0.16
+                        }
+                        return HumanDetection(id: UUID(), box: marker, confidence: 0,
+                                              humanSupported: supported)
                     }
                 } else {
                     let request = VNDetectHumanRectanglesRequest()
@@ -171,7 +201,9 @@ struct AIAnalysisOverlay: View {
                         Rectangle().stroke(Color.cyan, lineWidth: 2)
                             .frame(width: r.width * width, height: r.height * height)
                             .overlay(alignment: .topLeading) {
-                                Text(model.colorMode ? "علامة لون" : "شخص محتمل \(Int(detection.confidence * 100))٪")
+                                Text(model.colorMode
+                                     ? (detection.humanSupported ? "لون + شخص محتمل" : "علامة لون")
+                                     : "شخص محتمل \(Int(detection.confidence * 100))٪")
                                     .font(.caption2.bold()).foregroundStyle(.black)
                                     .padding(3).background(Color.cyan)
                             }
@@ -198,6 +230,11 @@ struct AIAnalysisSettings: View {
                 VelmiraSection("الذكاء الاصطناعي — معاينة البث") {
                     Toggle("تشغيل تحليل الصورة", isOn: $model.enabled)
                     Toggle("تتبّع لون العلامة بدل كشف الأشخاص", isOn: $model.colorMode)
+                    if model.colorMode {
+                        Toggle("دمج كشف اللون مع تحليل الأشخاص بالذكاء الاصطناعي", isOn: $model.hybridMode)
+                        Text("يجمع التحليل دليل اللون مع وجود شخص بالقرب من العلامة، ويحتفظ بالنتيجة اللونية إذا تعذر كشف الشخص. هذا لا يؤكد أنه خصم.")
+                            .font(.footnote)
+                    }
                     Toggle("تقليل الأخطاء — تأكيد 3 إطارات", isOn: $model.precisionMode)
                     if model.precisionMode {
                         Text("تظهر العلامة فقط بعد تأكيد وجودها في 3 صور متتالية. قد يؤدي ذلك إلى تجاهل الأهداف السريعة.")
