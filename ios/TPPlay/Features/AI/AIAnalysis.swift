@@ -708,7 +708,8 @@ final class AutoRosterScanner: @unchecked Sendable {
                           y: (1 - box.maxY) * CGFloat(image.height),
                           width: box.width * CGFloat(image.width),
                           height: box.height * CGFloat(image.height)).integral
-            .intersection(CGRect(x: 0, y: 0, width: image.width, height: image.height))
+            .intersection(CGRect(x: 0, y: 0, width: CGFloat(image.width),
+                                 height: CGFloat(image.height)))
         guard !rect.isNull, rect.width >= 4, rect.height >= 3,
               let cropped = image.cropping(to: rect) else { return nil }
         let w = min(96, cropped.width)
@@ -720,7 +721,7 @@ final class AutoRosterScanner: @unchecked Sendable {
                                       space: CGColorSpaceCreateDeviceRGB(),
                                       bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
             else { return false }
-            ctx.draw(cropped, in: CGRect(x: 0, y: 0, width: w, height: h))
+            ctx.draw(cropped, in: CGRect(x: 0, y: 0, width: CGFloat(w), height: CGFloat(h)))
             return true
         }
         guard rendered else { return nil }
