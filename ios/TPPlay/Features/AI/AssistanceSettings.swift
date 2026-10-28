@@ -277,7 +277,8 @@ final class GameProfiles: ObservableObject {
 }
 struct VelmiraToolsView: View {
     @ObservedObject private var profiles = GameProfiles.shared
-    @AppStorage("velmira.showMetrics") private var showMetrics = true
+    @State private var showMetrics = UserDefaults.standard.object(forKey: "velmira.showMetrics.compact.v2") as? Bool ?? false
+    @State private var toolsNotice = ""
     @State private var name = ""
     @State private var deleteID: UUID?
     var body: some View {
@@ -286,6 +287,20 @@ struct VelmiraToolsView: View {
                 VStack(spacing: 16) {
                     VelmiraSection("أدوات البث") {
                         Toggle("عرض لوحة الأداء أثناء البث", isOn: $showMetrics)
+                        Button {
+                            UserDefaults.standard.set(showMetrics, forKey: "velmira.showMetrics.compact.v2")
+                            toolsNotice = "تم حفظ إعدادات أدوات البث."
+                        } label: {
+                            Label("حفظ إعدادات الأدوات", systemImage: "square.and.arrow.down")
+                                .frame(maxWidth: .infinity, minHeight: 48)
+                        }
+                        .buttonStyle(AcidButtonStyle(active: true))
+                        Button("استعادة آخر إعدادات محفوظة") {
+                            showMetrics = UserDefaults.standard.object(forKey: "velmira.showMetrics.compact.v2") as? Bool ?? false
+                            toolsNotice = "تم استعادة القيم المحفوظة."
+                        }
+                        Text(toolsNotice.isEmpty ? "يجب الضغط على حفظ لتثبيت أي تعديل." : toolsNotice)
+                            .font(.footnote)
                         Text("داخل شاشة PS5 اضغط «معايرة»: اختر لون الاسم، ثم موضع التصويب على لقطة ثابتة. يمكنك حفظ اللون وحده أو حفظ النقطتين.")
                             .font(.footnote)
                         Text("زر إيقاف المساعدات يبقى ظاهراً داخل البث.").font(.footnote)
@@ -322,6 +337,9 @@ struct VelmiraToolsView: View {
                     }
                 }
         }.environment(\.layoutDirection, .rightToLeft)
+        .onDisappear {
+            showMetrics = UserDefaults.standard.object(forKey: "velmira.showMetrics.compact.v2") as? Bool ?? false
+        }
     }
 }
 struct ControllerTestView: View {
