@@ -432,10 +432,18 @@ private final class TPControllerButtonView: UIView {
     private let visualStyle: VisualStyle
     private var isDown = false
     private weak var trackedTouch: UITouch?
-
+    private let idleColor = UIColor(red: 0.07, green: 0.10, blue: 0.17, alpha: 0.78)
+    private let accent: UIColor
 
     init(key: String, text: String, symbol: String? = nil) {
         layoutKey = key
+        switch key {
+        case "triangle": accent = UIColor(red: 0.36, green: 0.91, blue: 0.70, alpha: 1)
+        case "circle": accent = UIColor(red: 1, green: 0.39, blue: 0.52, alpha: 1)
+        case "square": accent = UIColor(red: 0.74, green: 0.56, blue: 1, alpha: 1)
+        case "cross": accent = UIColor(red: 0.26, green: 0.69, blue: 1, alpha: 1)
+        default: accent = UIColor(red: 0.28, green: 0.79, blue: 0.93, alpha: 1)
+        }
         if ["dpadUp", "dpadLeft", "dpadRight", "dpadDown", "triangle", "square", "circle", "cross", "l3", "r3", "ps"].contains(key) {
             visualStyle = .round
         } else if ["l1", "l2", "r1", "r2"].contains(key) {
@@ -448,17 +456,21 @@ private final class TPControllerButtonView: UIView {
         isMultipleTouchEnabled = false
 
         visiblePlate.isUserInteractionEnabled = false
-        visiblePlate.backgroundColor = UIColor.white.withAlphaComponent(0.13)
+        visiblePlate.backgroundColor = idleColor
+        visiblePlate.layer.borderWidth = 1
+        visiblePlate.layer.borderColor = accent.withAlphaComponent(0.42).cgColor
         addSubview(visiblePlate)
 
         label.isUserInteractionEnabled = false
         label.text = symbol.flatMap { UIImage(systemName: $0) } == nil ? text : nil
-        label.font = UIFont.monospacedSystemFont(ofSize: 11, weight: .bold)
-        label.textColor = UIColor.white.withAlphaComponent(0.76)
+        label.font = UIFont.systemFont(ofSize: 12, weight: .bold)
+        label.adjustsFontSizeToFitWidth = true
+        label.minimumScaleFactor = 0.70
+        label.textColor = UIColor.white.withAlphaComponent(0.96)
         label.textAlignment = .center
         if let symbol, let image = UIImage(systemName: symbol) {
             let imageView = UIImageView(image: image)
-            imageView.tintColor = UIColor.white.withAlphaComponent(0.76)
+            imageView.tintColor = accent
             imageView.contentMode = .scaleAspectFit
             imageView.isUserInteractionEnabled = false
             imageView.tag = 99
@@ -479,15 +491,15 @@ private final class TPControllerButtonView: UIView {
         let visualHeight: CGFloat
         switch visualStyle {
         case .round:
-            let diameter = min(bounds.width, bounds.height) * 0.68
+            let diameter = min(bounds.width, bounds.height) * 0.80
             visualWidth = diameter
             visualHeight = diameter
         case .shoulder:
-            visualWidth = bounds.width * 0.78
-            visualHeight = bounds.height * 0.58
+            visualWidth = bounds.width * 0.88
+            visualHeight = bounds.height * 0.78
         case .utility:
-            visualWidth = bounds.width * 0.76
-            visualHeight = bounds.height * 0.56
+            visualWidth = bounds.width * 0.87
+            visualHeight = bounds.height * 0.72
         }
         visiblePlate.frame = CGRect(
             x: (bounds.width - visualWidth) / 2,
@@ -495,7 +507,7 @@ private final class TPControllerButtonView: UIView {
             width: visualWidth,
             height: visualHeight
         )
-        visiblePlate.layer.cornerRadius = visualStyle == .round ? visualHeight / 2 : min(9, visualHeight * 0.28)
+        visiblePlate.layer.cornerRadius = visualStyle == .round ? visualHeight / 2 : min(14, visualHeight * 0.43)
         label.frame = visiblePlate.frame
         symbolView?.frame = visiblePlate.frame.insetBy(dx: visualWidth * 0.27, dy: visualHeight * 0.27)
     }
@@ -504,10 +516,11 @@ private final class TPControllerButtonView: UIView {
         guard !isDown, trackedTouch == nil, let touch = touches.first else { return }
         trackedTouch = touch
         isDown = true
-        visiblePlate.backgroundColor = UIColor(red: 0.714, green: 1, blue: 0, alpha: 0.58)
-        visiblePlate.transform = CGAffineTransform(scaleX: 0.97, y: 0.97)
-        label.textColor = UIColor.black.withAlphaComponent(0.78)
-        symbolView?.tintColor = UIColor.black.withAlphaComponent(0.72)
+        visiblePlate.backgroundColor = accent.withAlphaComponent(0.87)
+        visiblePlate.layer.borderColor = UIColor.white.withAlphaComponent(0.74).cgColor
+        visiblePlate.transform = CGAffineTransform(scaleX: 0.95, y: 0.95)
+        label.textColor = .black
+        symbolView?.tintColor = .black
         UIImpactFeedbackGenerator(style: .light).impactOccurred(intensity: 0.65)
         onPressed?(true)
     }
@@ -535,10 +548,11 @@ private final class TPControllerButtonView: UIView {
         trackedTouch = nil
         guard isDown else { return }
         isDown = false
-        visiblePlate.backgroundColor = UIColor.white.withAlphaComponent(0.13)
+        visiblePlate.backgroundColor = idleColor
+        visiblePlate.layer.borderColor = accent.withAlphaComponent(0.42).cgColor
         visiblePlate.transform = .identity
-        label.textColor = UIColor.white.withAlphaComponent(0.76)
-        symbolView?.tintColor = UIColor.white.withAlphaComponent(0.76)
+        label.textColor = UIColor.white.withAlphaComponent(0.96)
+        symbolView?.tintColor = accent
         onPressed?(false)
     }
 }
@@ -559,10 +573,10 @@ private final class TPTouchpadView: UIView {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        backgroundColor = UIColor.white.withAlphaComponent(0.07)
+        backgroundColor = UIColor(red: 0.06, green: 0.095, blue: 0.16, alpha: 0.77)
         layer.borderWidth = 1
-        layer.borderColor = UIColor.white.withAlphaComponent(0.18).cgColor
-        layer.cornerRadius = 7
+        layer.borderColor = UIColor(red: 0.28, green: 0.79, blue: 0.93, alpha: 0.38).cgColor
+        layer.cornerRadius = 12
         isMultipleTouchEnabled = false
         accessibilityLabel = "Touchpad"
         isAccessibilityElement = true
@@ -586,8 +600,8 @@ private final class TPTouchpadView: UIView {
         startPoint = touch.location(in: self)
         didSlide = false
         isPressing = false
-        backgroundColor = UIColor.white.withAlphaComponent(0.18)
-        layer.borderColor = UIColor(red: 0.714, green: 1, blue: 0, alpha: 0.62).cgColor
+        backgroundColor = UIColor(red: 0.12, green: 0.20, blue: 0.31, alpha: 0.90)
+        layer.borderColor = UIColor(red: 0.28, green: 0.79, blue: 0.93, alpha: 0.85).cgColor
         publish(touch, active: true)
         // Allow an initial swipe without clicking the physical touchpad. Once
         // a stationary hold is recognized, keep the click down until release.
@@ -620,8 +634,8 @@ private final class TPTouchpadView: UIView {
         holdTask?.cancel()
         holdTask = nil
         trackedTouch = nil
-        backgroundColor = UIColor.white.withAlphaComponent(0.07)
-        layer.borderColor = UIColor.white.withAlphaComponent(0.18).cgColor
+        backgroundColor = UIColor(red: 0.06, green: 0.095, blue: 0.16, alpha: 0.77)
+        layer.borderColor = UIColor(red: 0.28, green: 0.79, blue: 0.93, alpha: 0.38).cgColor
         if isPressing {
             isPressing = false
             onPress?(false, coordinates.0, coordinates.1)
@@ -645,8 +659,8 @@ private final class TPTouchpadView: UIView {
             onPress?(false, 0, 0)
         }
         didSlide = false
-        backgroundColor = UIColor.white.withAlphaComponent(0.07)
-        layer.borderColor = UIColor.white.withAlphaComponent(0.18).cgColor
+        backgroundColor = UIColor(red: 0.06, green: 0.095, blue: 0.16, alpha: 0.77)
+        layer.borderColor = UIColor(red: 0.28, green: 0.79, blue: 0.93, alpha: 0.38).cgColor
         onTouch?(false, 0, 0)
     }
 
