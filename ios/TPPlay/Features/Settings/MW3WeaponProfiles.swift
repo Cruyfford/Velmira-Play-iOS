@@ -146,7 +146,7 @@ struct MW3WeaponTuning: Codable, Equatable {
     }
 }
 
-private struct MW3WeaponArchive: Codable {
+struct MW3WeaponArchive: Codable {
     var quickSlotIDs: [String?]
     var selectedID: String?
     var customTunings: [String: MW3WeaponTuning]
@@ -172,6 +172,31 @@ final class MW3WeaponStore: ObservableObject {
         while quickSlotIDs.count < 6 { quickSlotIDs.append(nil) }
         selectedID = archive.selectedID.flatMap { known.contains($0) ? $0 : nil }
         customTunings = archive.customTunings.filter { known.contains($0.key) }
+    }
+
+    func exportArchive() -> MW3WeaponArchive {
+        MW3WeaponArchive(quickSlotIDs: quickSlotIDs, selectedID: selectedID,
+                         customTunings: customTunings)
+    }
+
+    static func canImport(_ archive: MW3WeaponArchive) -> Bool {
+        let ids = Set(MW3Weapon.all.map(\.id))
+        guard archive.quickSlotIDs.count == 6,
+              archive.quickSlotIDs.allSatisfy({ $0 == nil || ids.contains($0!) }),
+              archive.selectedID == nil || ids.contains(archive.selectedID!),
+              archive.customTunings.count <= ids.count else { return false }
+        return archive.customTunings.allSatisfy { id, settings in
+            ids.contains(id) && valid(settings)
+        }
+    }
+
+    @discardableResult
+    func importArchive(_ archive: MW3WeaponArchive) -> Bool {
+        guard Self.canImport(archive) else { return false }
+        quickSlotIDs = archive.quickSlotIDs
+        selectedID = archive.selectedID
+        customTunings = archive.customTunings
+        return persist()
     }
 
     var selectedWeapon: MW3Weapon? { selectedID.flatMap(weapon(for:)) }
