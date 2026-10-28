@@ -51,6 +51,16 @@ struct RemotePlayView: View {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
                     Button {
+                        exitFromStream()
+                    } label: {
+                        Label("خروج من البث", systemImage: "arrow.uturn.backward")
+                            .font(.system(size: 14, weight: .bold))
+                            .padding(.horizontal, 12)
+                            .frame(minHeight: 44)
+                            .background(Color(red: 0.52, green: 0.14, blue: 0.18), in: Capsule())
+                    }
+                    .accessibilityLabel("الخروج من البث والعودة إلى صفحة الأجهزة")
+                    Button {
                         session.suspendAssistance(preserveActivation: true)
                         if let image = session.calibrationFrames.image() {
                             calibrationShot = CalibrationShot(image: image)
@@ -145,8 +155,21 @@ struct RemotePlayView: View {
             }
 
             if case .ended(let reason) = session.state {
-                ContentUnavailableView("Remote Play ended", systemImage: "rectangle.slash", description: Text(reason))
-                    .foregroundStyle(.white)
+                VStack(spacing: 18) {
+                    ContentUnavailableView("Remote Play ended", systemImage: "rectangle.slash", description: Text(reason))
+                        .foregroundStyle(.white)
+                    Button {
+                        closeSession()
+                    } label: {
+                        Label("العودة إلى صفحة الأجهزة", systemImage: "arrow.uturn.backward")
+                            .font(.headline.bold())
+                            .frame(minWidth: 220, minHeight: 52)
+                    }
+                    .buttonStyle(AcidButtonStyle(active: true))
+                    .accessibilityLabel("العودة إلى صفحة الأجهزة بعد انتهاء البث")
+                }
+                .padding(.horizontal, 20)
+                .zIndex(11)
             }
 
             if isClosing {
@@ -272,6 +295,15 @@ struct RemotePlayView: View {
         }
         withAnimation(.easeInOut(duration: 0.18)) {
             showsVirtualControls = !connected
+        }
+    }
+
+    private func exitFromStream() {
+        // An ended or failed connection has nothing to confirm; return immediately.
+        if case .ended = session.state {
+            closeSession()
+        } else {
+            showsExitConfirmation = true
         }
     }
 
