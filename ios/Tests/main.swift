@@ -104,3 +104,88 @@ require(persistence.update([CGRect(x: -0.1, y: 0.4, width: 0.1, height: 0.1)],
 persistence.reset()
 require(persistence.update([markA], at: 30).isEmpty, "Reset removes prior state")
 print("StableDetectionFilter verification checks passed")
+
+// Hybrid fusion: color alone or a person alone must never steer in hybrid mode.
+let body = CGRect(x: 0.40, y: 0.30, width: 0.20, height: 0.35)
+let nameplate = CGRect(x: 0.44, y: 0.68, width: 0.12, height: 0.025)
+let fused = HybridTargetFusion.associate(markers: [nameplate], people: [body])
+require(fused.count == 1 && fused[0].matchedPersonBox == body, "Link marker to body below it")
+require(HybridTargetFusion.associate(markers: [nameplate], people: []).isEmpty, "Color alone is insufficient")
+require(HybridTargetFusion.associate(markers: [], people: [body]).isEmpty, "Person alone is insufficient")
+let unrelated = CGRect(x: 0.75, y: 0.68, width: 0.1, height: 0.025)
+require(HybridTargetFusion.associate(markers: [unrelated], people: [body]).isEmpty, "Reject unrelated color")
+let overlappingBody = CGRect(x: 0.41, y: 0.30, width: 0.20, height: 0.35)
+require(HybridTargetFusion.associate(markers: [nameplate], people: [body, overlappingBody]).isEmpty,
+        "Ambiguous players under one label must not create a target")
+require(HybridTargetFusion.associate(markers: [nameplate, nameplate], people: [body]).count == 1,
+        "Duplicate name fragments produce one target per body")
+let tallPatch = CGRect(x: 0.44, y: 0.68, width: 0.12, height: 0.15)
+require(HybridTargetFusion.associate(markers: [tallPatch], people: [body]).isEmpty, "Reject large background color patch")
+let rawReport = HumanAnalysis(detections: fused, imageSize: CGSize(width: 1920, height: 1080),
+                              capturedAt: 40, milliseconds: 5, error: nil)
+let hybridSample = rawReport.trackingSample(colorMode: true, hybridMode: true)
+require(hybridSample.boxes == [body] && !hybridSample.colorMode, "Steer to body coordinates, not fixed name offset")
+let legacySample = rawReport.trackingSample(colorMode: true, hybridMode: false)
+require(legacySample.boxes == [nameplate] && legacySample.colorMode, "Preserve explicit color-only mode")
+let unverified = HumanAnalysis(detections: [HumanDetection(id: UUID(), box: nameplate, confidence: 1)],
+                              imageSize: .zero, capturedAt: 40, milliseconds: 5, error: nil)
+require(unverified.trackingSample(colorMode: true, hybridMode: true).boxes.isEmpty, "Defensive control boundary rejects unsupported color")
+let failedReport = HumanAnalysis(detections: fused, imageSize: .zero, capturedAt: 40,
+                                 milliseconds: 5, error: "Vision failed")
+require(failedReport.trackingSample(colorMode: true, hybridMode: true).boxes.isEmpty, "Do not steer on failed analysis")
+
+// The real color detector feeds the same geometry used by fusion.
+CVPixelBufferLockBaseAddress(buffer, [])
+pixels.initialize(repeating: 0, count: pitch * 128)
+for y in 16..<20 {
+    for x in 64..<88 {
+        pixels[y * pitch + x * 4 + 2] = 255
+        pixels[y * pitch + x * 4 + 3] = 255
+    }
+}
+CVPixelBufferUnlockBaseAddress(buffer, [])
+let thinMarkers = try ColorTargetDetector.detect(buffer, configuration: ColorTrackingConfiguration())
+let fixtureBody = CGRect(x: 0.48, y: 0.40, width: 0.25, height: 0.42)
+require(HybridTargetFusion.associate(markers: thinMarkers, people: [fixtureBody]).count == 1,
+        "Actual extracted color can link to a body in Vision coordinates")
+
+// Two analyses establish identity; missing evidence produces no stale output.
+var hybridPersistence = StableDetectionFilter()
+require(hybridPersistence.update([body], at: 50, requiredFrames: 2).isEmpty, "Hybrid requires a second observation")
+let confirmedHybrid = hybridPersistence.update([body], at: 50.125, requiredFrames: 2)
+require(confirmedHybrid.count == 1, "Hybrid confirmation after two analyses")
+require(hybridPersistence.update([], at: 50.25, requiredFrames: 2).isEmpty, "No output during missing evidence")
+
+// Identity survives movement but may not transfer to a different overlapping player.
+var identityEngine = TrackingEngine()
+var identityConfig = AssistanceConfiguration()
+identityConfig.radius = 0.5
+identityConfig.pointY = 0.5
+let targetID = UUID(), distractorID = UUID()
+_ = identityEngine.step(now: 60, armed: true, l2: 0, r2: 0, rawX: 0, rawY: 0, sample: nil, config: identityConfig)
+let firstIdentity = TrackingSample(boxes: [body], capturedAt: 60.1, colorMode: false, targetIDs: [targetID])
+require(identityEngine.step(now: 60.1, armed: true, l2: 1, r2: 0, rawX: 0, rawY: 0,
+                           sample: firstIdentity, config: identityConfig).target != nil, "Acquire confirmed identity")
+let movedBody = CGRect(x: 0.63, y: 0.30, width: 0.20, height: 0.35)
+let movedIdentity = TrackingSample(boxes: [body, movedBody], capturedAt: 60.2, colorMode: false,
+                                   targetIDs: [distractorID, targetID])
+let movedOutput = identityEngine.step(now: 60.2, armed: true, l2: 1, r2: 0, rawX: 0, rawY: 0,
+                                     sample: movedIdentity, config: identityConfig)
+require(movedOutput.target != nil && abs(movedOutput.target!.x - 0.73) < 0.0001,
+        "Confirmed ID follows motion instead of switching to a closer player")
+let replacement = TrackingSample(boxes: [movedBody], capturedAt: 60.3, colorMode: false, targetIDs: [distractorID])
+require(identityEngine.step(now: 60.3, armed: true, l2: 1, r2: 0, rawX: 0, rawY: 0,
+                           sample: replacement, config: identityConfig).target == nil,
+        "Identical geometry with different identity must not inherit the lock")
+print("Hybrid fusion and identity checks passed")
+
+var crossingFilter = StableDetectionFilter()
+let crossingA = CGRect(x: 0.40, y: 0.30, width: 0.20, height: 0.35)
+let crossingB = CGRect(x: 0.46, y: 0.30, width: 0.20, height: 0.35)
+_ = crossingFilter.update([crossingA, crossingB], at: 70, requiredFrames: 2)
+require(crossingFilter.update([crossingA, crossingB], at: 70.125, requiredFrames: 2).count == 2,
+        "Separate bodies can establish independent identities")
+let crossingMiddle = CGRect(x: 0.43, y: 0.30, width: 0.20, height: 0.35)
+require(crossingFilter.update([crossingMiddle], at: 70.25, requiredFrames: 2).isEmpty,
+        "An ambiguous crossing must not inherit either established identity")
+print("Ambiguous temporal association check passed")

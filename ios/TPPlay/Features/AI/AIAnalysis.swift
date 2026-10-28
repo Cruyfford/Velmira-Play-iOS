@@ -5,66 +5,11 @@ import ImageIO
 import PhotosUI
 import CoreImage
 
-struct HumanDetection: Identifiable, Sendable {
-    let id: UUID
-    let box: CGRect
-    let confidence: Float
-    /// Additional human-rectangle evidence, not a calibrated accuracy score.
-    var humanSupported = false
-    /// An optional person rectangle linked visually to a colored nameplate.
-    /// Missing or ambiguous associations must not create a body-point marker.
-    var matchedPersonBox: CGRect? = nil
-}
-/// Pairs a colored player name with a visible body for a read-only overlay.
-/// Missing/ambiguous evidence produces no automatic body marker.
-enum VisualBodyAssociation {
-    static func bestPerson(for name: CGRect, among people: [CGRect]) -> CGRect? {
-        guard name.width > 0, name.height > 0 else { return nil }
-        let options: [(rect: CGRect, score: CGFloat)] = people.compactMap { body in
-            guard body.width >= 0.015, body.height >= 0.055,
-                  body.minX >= 0, body.minY >= 0,
-                  body.maxX <= 1, body.maxY <= 1 else { return nil }
-            let toleranceX = max(0.02, min(0.06, body.width * 0.3))
-            guard name.midX >= body.minX - toleranceX,
-                  name.midX <= body.maxX + toleranceX else { return nil }
-            let verticalGap = name.minY - body.maxY
-            let allowableGap = max(0.035, min(0.12, body.height * 0.6))
-            let allowableOverlap = max(0.018, min(0.045, body.height * 0.15))
-            guard verticalGap >= -allowableOverlap,
-                  verticalGap <= allowableGap else { return nil }
-            let xError = abs(name.midX - body.midX) / max(0.025, body.width)
-            let yError = abs(verticalGap) / max(0.025, allowableGap)
-            return (body, xError + yError * 0.65)
-        }.sorted { $0.score < $1.score }
-        guard let best = options.first else { return nil }
-        // Reject two similarly plausible players under the same colored name.
-        if options.count > 1 && options[1].score - best.score < 0.28 { return nil }
-        return best.rect
-    }
-
-    /// Selected relative body location, automatically scaling with visible size.
-    /// Returns top-left normalized video coordinates for SwiftUI display.
-    static func selectedPoint(in body: CGRect, x: Double, y: Double) -> CGPoint {
-        let px = CGFloat(min(1, max(0, x)))
-        let py = CGFloat(min(1, max(0, y)))
-        return CGPoint(x: body.minX + body.width * px,
-                       y: 1 - body.maxY + body.height * py)
-    }
-}
-
-struct HumanAnalysis: Sendable {
-    let detections: [HumanDetection]
-    let imageSize: CGSize
-    let capturedAt: TimeInterval
-    let milliseconds: Double
-    let error: String?
-}
-
 /// Analysis is independent from controller output; assistance consumes fresh results only.
 @MainActor
 final class AIAnalysisState: ObservableObject {
     static let shared = AIAnalysisState()
-    @Published var colorMode = false { didSet { configure() } }
+    @Published var colorMode = true { didSet { configure() } }
     @Published var hybridMode = true { didSet { configure() } }
     @Published var adaptiveBodyMarker = true { didSet { configure() } }
     @Published var precisionMode = true { didSet { configure() } }
@@ -73,7 +18,7 @@ final class AIAnalysisState: ObservableObject {
     @Published var colorTolerance = 0.045 { didSet { configure() } }
     @Published var enabled = false { didSet { configure() } }
     @Published var threshold = 0.6 { didSet { configure() } }
-    @Published var rate = 3.0 { didSet { configure() } }
+    @Published var rate = 8.0 { didSet { configure() } }
     @Published private(set) var result: HumanAnalysis?
     private struct SavedAISettings: Codable {
         var colorMode: Bool
@@ -128,16 +73,32 @@ final class AIAnalysisState: ObservableObject {
         result = nil
         persistence.reset()
     }
+    /// Configure image analysis only; activation of controller assistance stays manual.
+    func prepareHybridTracking() {
+        colorMode = true
+        hybridMode = true
+        precisionMode = true
+        adaptiveBodyMarker = true
+        rate = 8
+        enabled = true
+    }
+
     func accept(_ value: HumanAnalysis) {
-        guard precisionMode else { result = value; return }
+        let hybrid = colorMode && hybridMode
+        guard precisionMode || hybrid else { result = value; return }
         if value.error != nil {
             persistence.reset()
             result = value
             return
         }
-        let confirmations = persistence.update(value.detections.map(\.box), at: value.capturedAt)
+        // Confirm the body, not small moving letter fragments. Hybrid mode
+        // always needs two independent observations, even without precision mode.
+        let evidence = hybrid ? value.detections.filter { $0.matchedPersonBox != nil } : value.detections
+        let boxes = evidence.map { hybrid ? ($0.matchedPersonBox ?? $0.box) : $0.box }
+        let confirmations = persistence.update(boxes, at: value.capturedAt,
+                                               requiredFrames: hybrid ? 2 : 3)
         let confirmed = confirmations.map { match -> HumanDetection in
-            let item = value.detections[match.index]
+            let item = evidence[match.index]
             return HumanDetection(id: match.id, box: item.box, confidence: item.confidence,
                                   humanSupported: item.humanSupported,
                                   matchedPersonBox: item.matchedPersonBox)
@@ -231,14 +192,19 @@ final class AIFrameAnalyzer: @unchecked Sendable {
                                 $0.confidence >= minimum
                             }.map { $0.boundingBox }
                         } catch {
-                            // Preserve color-only observations if human detection fails.
+                            if useHybrid { throw error }
+                            // Color-only mode can still show its unverified markers.
                         }
                     }
-                    detections = colorBoxes.map { marker in
-                        let match = VisualBodyAssociation.bestPerson(for: marker, among: people)
-                        return HumanDetection(id: UUID(), box: marker, confidence: 0,
-                                              humanSupported: match != nil,
-                                              matchedPersonBox: match)
+                    if useHybrid {
+                        detections = HybridTargetFusion.associate(markers: colorBoxes, people: people)
+                    } else {
+                        detections = colorBoxes.map { marker in
+                            let match = VisualBodyAssociation.bestPerson(for: marker, among: people)
+                            return HumanDetection(id: UUID(), box: marker, confidence: 0,
+                                                  humanSupported: match != nil,
+                                                  matchedPersonBox: match)
+                        }
                     }
                 } else {
                     let request = VNDetectHumanRectanglesRequest()
@@ -329,19 +295,20 @@ struct AIAnalysisSettings: View {
                         .frame(maxWidth: .infinity, minHeight: 54)
                 }.buttonStyle(AcidButtonStyle(active: true))
                 VelmiraSection("الذكاء الاصطناعي — معاينة البث") {
+                    Button("إعداد التتبّع المدمج: لون + جسم") { model.prepareHybridTracking() }
                     Toggle("تشغيل تحليل الصورة", isOn: $model.enabled)
-                    Toggle("تتبّع لون العلامة بدل كشف الأشخاص", isOn: $model.colorMode)
+                    Toggle("استخدام لون علامة الخصم", isOn: $model.colorMode)
                     if model.colorMode {
                         Toggle("دمج كشف اللون مع تحليل الأشخاص بالذكاء الاصطناعي", isOn: $model.hybridMode)
-                        Text("يجمع التحليل دليل اللون مع وجود شخص بالقرب من العلامة، ويحتفظ بالنتيجة اللونية إذا تعذر كشف الشخص. هذا لا يؤكد أنه خصم.")
+                        Text("يشترط لون العلامة مع جسم مكتشف ومطابقة واضحة بينهما. عند فقد أحدهما يتوقف التتبّع؛ لون العلامة لا يثبت الفريق وحده.")
                             .font(.footnote)
                     }
                     Toggle("إظهار موضع الجسم المختار مع تغير مسافة اللاعب", isOn: $model.adaptiveBodyMarker)
-                    Text("نقطة مرئية للرأس أو البطن أو الرجل أو مكان مخصص. تتغير مع حجم جسم اللاعب المكتشف، ولا تتدخل في حركة يد التحكم.")
+                    Text("في الوضع المدمج تتبع نقطة التصويب الجسم المكتشف وتتكيف مع حجمه. إظهار العلامة خيار مرئي؛ حركة التحكم تحتاج تفعيل المساعدة وL2.")
                         .font(.footnote)
-                    Toggle("تقليل الأخطاء — تأكيد 3 إطارات", isOn: $model.precisionMode)
+                    Toggle("تقليل الأخطاء — تأكيد عبر الإطارات", isOn: $model.precisionMode)
                     if model.precisionMode {
-                        Text("تظهر العلامة فقط بعد تأكيد وجودها في 3 صور متتالية. قد يؤدي ذلك إلى تجاهل الأهداف السريعة.")
+                        Text("الوضع المدمج يشترط صورتين للتحقق. الأوضاع الأخرى تستخدم 3 صور عند تفعيل هذا الخيار. لا تُرسل حركة نحو هدف غائب.")
                             .font(.footnote).foregroundStyle(.orange)
                         Text("التأكيد لا يثبت أن الشخصية من فريق الخصم. استخدم لون العلامة المميز وراجع النتائج.")
                             .font(.footnote)

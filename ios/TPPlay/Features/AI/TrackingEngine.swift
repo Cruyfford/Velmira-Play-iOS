@@ -33,6 +33,7 @@ struct TrackingSample {
     let boxes: [CGRect] // Vision normalized coordinates: origin bottom left.
     let capturedAt: TimeInterval
     let colorMode: Bool
+    var targetIDs: [UUID]? = nil
 }
 struct AssistanceOutput {
     var x: Double
@@ -50,6 +51,7 @@ struct TrackingEngine {
     private var swapAt: TimeInterval?
     private var quickFired = false
     private var locked: CGRect?
+    private var lockedID: UUID?
     private var lastSeen: TimeInterval = 0
     private var blockedUntilRelease = false
     private var previousTick: TimeInterval?
@@ -87,7 +89,7 @@ struct TrackingEngine {
         }
         defer { previousL2 = aim; previousR2 = shoot; previousTick = now }
         guard aim else {
-            locked = nil; blockedUntilRelease = false; scopeStarted = nil; swapAt = nil
+            locked = nil; lockedID = nil; blockedUntilRelease = false; scopeStarted = nil; swapAt = nil
             quickFired = false; smoothX = 0; smoothY = 0
             return out
         }
@@ -117,29 +119,41 @@ struct TrackingEngine {
         if c.tracking && !manual && !blockedUntilRelease,
            let sample, now >= sample.capturedAt, now - sample.capturedAt <= clamp(c.staleAfter, 0.1, 0.8) {
             let center = CGPoint(x: 0.5, y: 0.5)
-            let candidates = sample.boxes.filter {
-                !$0.isNull && $0.width > 0 && $0.height > 0 &&
-                distance(point($0, sample.colorMode, c), center) <= clamp(c.radius, 0.05, 0.5)
+            // Stable visual identity takes priority over rectangle overlap.
+            // A nearby different player must not inherit the lock.
+            let candidates = sample.boxes.indices.filter { index in
+                let box = sample.boxes[index]
+                return !box.isNull && box.width > 0 && box.height > 0 &&
+                    distance(point(box, sample.colorMode, c), center) <= clamp(c.radius, 0.05, 0.5)
             }
-            var selected: CGRect?
+            func identity(_ index: Int) -> UUID? {
+                guard let ids = sample.targetIDs, ids.count == sample.boxes.count else { return nil }
+                return ids[index]
+            }
+            var selected: Int?
             if let prior = locked {
-                selected = candidates.filter {
-                    // Nearby nonoverlapping boxes are NOT treated as the same person.
-                    overlap(prior, $0) >= 0.12
-                }.max { overlap(prior, $0) < overlap(prior, $1) }
+                if let lockedID {
+                    selected = candidates.first { identity($0) == lockedID }
+                } else {
+                    selected = candidates.filter { overlap(prior, sample.boxes[$0]) >= 0.12 }
+                        .max { overlap(prior, sample.boxes[$0]) < overlap(prior, sample.boxes[$1]) }
+                }
                 if selected == nil && now - lastSeen >= clamp(c.lossDelay, 0.15, 2) {
                     locked = nil
+                    lockedID = nil
                     if !c.switchOnLoss { blockedUntilRelease = true }
                 }
             }
             if locked == nil && !blockedUntilRelease {
                 selected = candidates.min {
-                    distance(point($0, sample.colorMode, c), center) < distance(point($1, sample.colorMode, c), center)
+                    distance(point(sample.boxes[$0], sample.colorMode, c), center) <
+                        distance(point(sample.boxes[$1], sample.colorMode, c), center)
                 }
             }
             if let selected {
-                locked = selected; lastSeen = sample.capturedAt
-                let target = point(selected, sample.colorMode, c)
+                let box = sample.boxes[selected]
+                locked = box; lockedID = identity(selected); lastSeen = sample.capturedAt
+                let target = point(box, sample.colorMode, c)
                 out.target = target
                 let dx = target.x - 0.5, dy = target.y - 0.5
                 let cap = clamp(c.maxStick, 0.02, 0.8)
@@ -153,7 +167,7 @@ struct TrackingEngine {
             } else { smoothX = 0; smoothY = 0 }
         } else {
             smoothX = 0; smoothY = 0
-            if manual { locked = nil }
+            if manual { locked = nil; lockedID = nil }
         }
         if c.recoil && (shoot || out.fire) && !manual {
             out.x += clamp(c.recoilX, -0.3, 0.3)

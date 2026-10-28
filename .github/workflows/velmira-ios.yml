@@ -2,6 +2,8 @@ name: Build Velmira iOS (unsigned)
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 permissions:
   contents: read
@@ -12,10 +14,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: true
+          submodules: false
+      - name: Verify bundled dependencies
+        run: python3 tools/check_dependencies.py
+      - name: Check Python tools
+        run: python3 -m unittest discover -s tools -p 'test_*.py' -v
+      - name: Check streaming backpressure and recovery
+        run: |
+          swiftc ios/TPPlay/Platform/Streaming/VideoDecodeState.swift ios/Tests/Streaming/main.swift -o /tmp/velmira-streaming-checks
+          /tmp/velmira-streaming-checks
       - name: Check controller behavior
         run: |
-          swiftc ios/TPPlay/Features/AI/TrackingEngine.swift ios/TPPlay/Features/AI/ColorTargetDetector.swift ios/Tests/main.swift -o /tmp/velmira-checks
+          swiftc ios/TPPlay/Features/AI/TrackingEngine.swift ios/TPPlay/Features/AI/HybridTracking.swift ios/TPPlay/Features/AI/ColorTargetDetector.swift ios/Tests/main.swift -o /tmp/velmira-checks
           /tmp/velmira-checks
       - name: Install build dependencies
         run: brew install cmake ninja protobuf pkg-config

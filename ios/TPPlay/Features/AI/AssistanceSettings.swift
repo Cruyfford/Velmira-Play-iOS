@@ -69,6 +69,18 @@ struct AssistanceSettings: View {
                     Text("تعديلات مصدر لم تُختبر على PS5 بعد. كشف الأشخاص لا يميز العدو من الصديق. وضع اللون يعتمد على لون علامة الخصم الذي تختاره.").font(.footnote)
                 }
                 VelmiraSection("التتبّع") {
+                    Button("إعداد التتبّع المدمج: لون + جسم") {
+                        model.emergencyStop(reason: "اختر لون الخصم ثم فعّل المساعدة")
+                        vision.prepareHybridTracking()
+                        model.configuration.tracking = true
+                        model.configuration.pointX = 0.5
+                        model.configuration.pointY = 0.5
+                        savedNotice = "اختر لون علامة الخصم بالمعايرة، ثم احفظ الإعدادات وفعّل المساعدة عند L2."
+                    }
+                    if vision.colorMode {
+                        Toggle("اشتراط جسم مكتشف مع لون الخصم", isOn: $vision.hybridMode)
+                        Text("في الوضع المدمج يتبع التصويب موضع الجسم المختار؛ الإزاحة من الاسم تخص وضع اللون وحده.").font(.footnote)
+                    }
                     Toggle("تحريك التصويب نحو الهدف", isOn: $model.configuration.tracking)
                     if !vision.enabled {
                         Button("تشغيل تحليل الصورة") { vision.enabled = true }
@@ -193,7 +205,7 @@ struct AssistanceSettings: View {
                 VelmiraSection("إذا كان اللون فوق الرأس") {
                     valueSlider("الإزاحة الأفقية من الاسم", value: $model.configuration.colorOffsetX, range: -0.3...0.3)
                     valueSlider("الإزاحة أسفل الاسم", value: $model.configuration.colorOffsetY, range: -0.1...0.4)
-                    Text("الإزاحة نسبة من حجم الصورة. تختلف حسب المسافة والتقريب؛ عايرها على البث. نقطة الاسم ونقطة التصويب مختلفتان.").font(.footnote)
+                    Text("هذه الإزاحة لوضع اللون وحده. الوضع المدمج يستخدم موضع التصويب داخل الجسم ويتكيف مع حجمه.").font(.footnote)
                 }
                 VelmiraSection("السنايبر — مرة لكل ضغطة L2") {
                     Toggle("Quick Scope: تصويب ثم R2", isOn: $model.configuration.quickScope)
@@ -604,7 +616,7 @@ struct StreamCalibrationView: View {
                     Button("حفظ اللون ومعايرة النقطتين") { save(includeOffset: true) }
                         .frame(maxWidth: .infinity, minHeight: 48).buttonStyle(AcidButtonStyle(active: true))
                         .disabled(hue == nil || marker == nil || aim == nil)
-                    Text("الإزاحة ثابتة كنسبة من الصورة؛ أعد المعايرة إذا تغيّرت المسافة أو درجة التقريب. حفظ اللون يختار وضع اللون، ولا يفعّل المساعدات.")
+                    Text("للوضع المدمج احفظ اللون وحده واختر موضع التصويب داخل الجسم من الإعدادات. النقطتان تضبطان إزاحة وضع اللون وحده. الحفظ لا يفعّل المساعدات.")
                         .font(.footnote)
                 }.padding(20)
             }.background(TPPlayTheme.canvas)

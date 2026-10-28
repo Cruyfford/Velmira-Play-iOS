@@ -126,7 +126,7 @@ struct StableDetectionFilter {
             guard box.minX.isFinite, box.minY.isFinite, box.maxX.isFinite, box.maxY.isFinite,
                   box.width > 0, box.height > 0,
                   box.minX >= 0, box.minY >= 0, box.maxX <= 1, box.maxY <= 1 else { continue }
-            let best = available.compactMap { i -> (Int, CGFloat)? in
+            let ranked = available.compactMap { i -> (Int, CGFloat)? in
                 let old = tracks[i].box
                 let dx = abs(old.midX - box.midX)
                 let dy = abs(old.midY - box.midY)
@@ -136,7 +136,11 @@ struct StableDetectionFilter {
                 guard dx <= limitX, dy <= limitY, ratio >= 0.40, ratio <= 2.5 else { return nil }
                 let score = dx / limitX + dy / limitY + abs(1 - ratio) * 0.25
                 return (i, score)
-            }.min { $0.1 < $1.1 }
+            }.sorted { $0.1 < $1.1 }
+            // Crossing/overlapping players can be equally plausible. Start a
+            // new unconfirmed identity instead of transferring a prior lock.
+            let ambiguous = ranked.count > 1 && ranked[1].1 - ranked[0].1 < 0.20
+            let best = ambiguous ? nil : ranked.first
 
             let item: Track
             if let oldIndex = best?.0 {

@@ -229,6 +229,7 @@ final class RemotePlaySession: ObservableObject {
             tp_play_session_stop(session)
             tp_play_session_destroy(session)
         }
+        videoDecoder.stop()
         audioPlayer.stop()
         renderer.stopBufferedPlayback()
     }
@@ -241,6 +242,7 @@ final class RemotePlaySession: ObservableObject {
 
         suspendAssistance(reason: "تم إنهاء جلسة Remote Play")
         isStopped = true
+        videoDecoder.stop()
         calibrationFrames.clear()
         measuredFPS = 0; packetLoss = nil; connectionRTT = nil
         AIAnalysisState.shared.clear()
@@ -657,7 +659,7 @@ final class RemotePlaySession: ObservableObject {
         let ai = AIAnalysisState.shared
         let assistance = AssistanceState.shared
         let sample = ai.enabled ? ai.result.map {
-            TrackingSample(boxes: $0.detections.map(\.box), capturedAt: $0.capturedAt, colorMode: ai.colorMode)
+            $0.trackingSample(colorMode: ai.colorMode, hybridMode: ai.hybridMode)
         } : nil
         let result = assistanceEngine.step(
             now: ProcessInfo.processInfo.systemUptime, armed: assistance.armed,
@@ -675,6 +677,8 @@ final class RemotePlaySession: ObservableObject {
     }
 
     fileprivate func receiveEvent(type: Int32, value: Int32, message: String?) {
+        // Native callbacks already queued on MainActor may arrive after stop.
+        guard !isStopped else { return }
         switch type {
         case 1000:
             if let stage = ConnectionStage(rawValue: value), case .connecting = state {
@@ -684,15 +688,7 @@ final class RemotePlaySession: ObservableObject {
             markConnected()
         case 1: state = .loginPINRequired(incorrect: value != 0)
         case 9:
-            suspendAssistance(reason: "انقطع اتصال Remote Play")
-            assistanceTask?.cancel()
-            assistanceTask = nil
-            streamHealthTask?.cancel()
-            streamHealthTask = nil
-            renderer.stopBufferedPlayback()
-            audioPlayer.stop()
-            calibrationFrames.clear()
-            measuredFPS = 0; packetLoss = nil; connectionRTT = nil
+            stop()
             state = .ended(message ?? "Remote Play ended (reason \(value)).")
         default: break
         }

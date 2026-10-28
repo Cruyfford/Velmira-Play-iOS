@@ -37,6 +37,8 @@
 		A10000000000000000000004 /* ColorTargetDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000004 /* ColorTargetDetector.swift */; };
 		A20000000000000000000005 /* MW3WeaponProfiles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TPPlay/Features/Settings/MW3WeaponProfiles.swift; sourceTree = SOURCE_ROOT; };
 		A10000000000000000000005 /* MW3WeaponProfiles.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000005 /* MW3WeaponProfiles.swift */; };
+		B10000000000000000000001 /* VideoDecodeState.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000001; };
+		B10000000000000000000002 /* HybridTracking.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000002; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -77,6 +79,8 @@
 		A20000000000000000000002 /* TrackingEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TPPlay/Features/AI/TrackingEngine.swift; sourceTree = SOURCE_ROOT; };
 		A20000000000000000000003 /* AssistanceSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TPPlay/Features/AI/AssistanceSettings.swift; sourceTree = SOURCE_ROOT; };
 		A20000000000000000000004 /* ColorTargetDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TPPlay/Features/AI/ColorTargetDetector.swift; sourceTree = SOURCE_ROOT; };
+		B20000000000000000000001 /* VideoDecodeState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoDecodeState.swift; sourceTree = "<group>"; };
+		B20000000000000000000002 /* HybridTracking.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TPPlay/Features/AI/HybridTracking.swift; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -141,6 +145,7 @@
 		300000000000000000000006 /* Features */ = {
 			isa = PBXGroup;
 			children = (
+				B20000000000000000000002 /* HybridTracking.swift */,
 				300000000000000000000007 /* ConsoleLibrary */,
 				30000000000000000000000A /* Registration */,
 				30000000000000000000000C /* RemotePlay */,
@@ -174,6 +179,7 @@
 			isa = PBXGroup;
 			children = (
 				20000000000000000000000F /* VideoDecoder.swift */,
+				B20000000000000000000001 /* VideoDecodeState.swift */,
 				200000000000000000000010 /* AudioPlayer.swift */,
 				200000000000000000000011 /* MetalVideoView.swift */,
 				200000000000000000000012 /* RemotePlaySession.swift */,
@@ -357,6 +363,7 @@
 				A10000000000000000000003 /* AssistanceSettings.swift in Sources */,
 				A10000000000000000000005 /* MW3WeaponProfiles.swift in Sources */,
 				A10000000000000000000002 /* TrackingEngine.swift in Sources */,
+				B10000000000000000000002 /* HybridTracking.swift in Sources */,
 				100000000000000000000002 /* RootView.swift in Sources */,
 				100000000000000000000003 /* TPPlayTheme.swift in Sources */,
 				100000000000000000000004 /* ConsoleLibraryView.swift in Sources */,
@@ -365,6 +372,7 @@
 				100000000000000000000008 /* RegisteredConsoleStore.swift in Sources */,
 				100000000000000000000009 /* ConsoleRegistrationView.swift in Sources */,
 				10000000000000000000000A /* VideoDecoder.swift in Sources */,
+				B10000000000000000000001 /* VideoDecodeState.swift in Sources */,
 				10000000000000000000000B /* AudioPlayer.swift in Sources */,
 				10000000000000000000000C /* MetalVideoView.swift in Sources */,
 				10000000000000000000000D /* RemotePlaySession.swift in Sources */,

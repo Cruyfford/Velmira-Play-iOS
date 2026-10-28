@@ -14,6 +14,9 @@ build_dir="$ios_dir/.build/$platform/cmake"
 output_dir="$ios_dir/.build/$platform"
 python_env="$ios_dir/.build/python"
 sources_dir="$ios_dir/.build/sources"
+
+# Works for extracted ZIPs too; fail before downloading or configuring anything.
+python3 "$repo_dir/tools/check_dependencies.py"
 mbedtls_source="$sources_dir/mbedtls-2.28.0"
 opus_source="$sources_dir/opus-1.5.2"
 

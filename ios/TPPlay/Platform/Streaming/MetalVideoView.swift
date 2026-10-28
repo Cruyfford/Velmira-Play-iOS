@@ -46,6 +46,7 @@ final class MetalVideoRenderer: NSObject, MTKViewDelegate, @unchecked Sendable {
     private let frameIntervalNanoseconds: Int
     private let onStartupBufferReady: (@Sendable () -> Void)?
     private var bufferedPlaybackStarted = false
+    private var stopped = false
 
     init(
         framesPerSecond: Int = 60,
@@ -73,6 +74,7 @@ final class MetalVideoRenderer: NSObject, MTKViewDelegate, @unchecked Sendable {
 
     func display(_ pixelBuffer: CVPixelBuffer) {
         lock.lock()
+        guard !stopped else { lock.unlock(); return }
         receivedFrames &+= 1
         if !didLogDisplay {
             didLogDisplay = true
@@ -113,6 +115,11 @@ final class MetalVideoRenderer: NSObject, MTKViewDelegate, @unchecked Sendable {
     }
 
     func stopBufferedPlayback() {
+        lock.lock()
+        stopped = true
+        pixelBuffer = nil
+        bufferedFrames.removeAll(keepingCapacity: false)
+        lock.unlock()
         playbackQueue.async { [weak self] in
             guard let self else { return }
             self.playbackTimer?.setEventHandler {}
@@ -128,6 +135,10 @@ final class MetalVideoRenderer: NSObject, MTKViewDelegate, @unchecked Sendable {
     private func startBufferedPlayback() {
         playbackQueue.async { [weak self] in
             guard let self, self.playbackTimer == nil else { return }
+            self.lock.lock()
+            let stopped = self.stopped
+            self.lock.unlock()
+            guard !stopped else { return }
             let timer = DispatchSource.makeTimerSource(queue: self.playbackQueue)
             timer.schedule(
                 deadline: .now(),

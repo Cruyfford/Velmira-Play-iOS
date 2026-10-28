@@ -21,19 +21,13 @@ final class VideoDecoder: @unchecked Sendable {
     private var didLogDecodedFrame = false
     private var diagnosticInputFrames: UInt64 = 0
     private var diagnosticOutputFrames: UInt64 = 0
-    private var queuedFrames = 0
+    private var flow = VideoDecodeState()
     private var lastInputNanoseconds: UInt64 = 0
     private var lastOutputNanoseconds: UInt64 = 0
-    private var recoveryRequested = false
     private var parameterSets: [Int: Data] = [:]
     private var formatDescription: CMVideoFormatDescription?
     private var session: VTDecompressionSession?
     private var waitingForKeyframe = false
-
-    // The network reorder queue can legitimately release several complete
-    // frames at once after a jitter burst. Keep enough compressed-frame headroom
-    // for that burst without allowing an unbounded decode backlog.
-    private static let maximumQueuedFrames = 32
 
     init(hevc: Bool) {
         codec = hevc ? kCMVideoCodecType_HEVC : kCMVideoCodecType_H264
@@ -46,15 +40,12 @@ final class VideoDecoder: @unchecked Sendable {
     }
 
     func decode(_ annexB: Data) -> Bool {
-        var rejectFrame = false
+        let receivedAt = DispatchTime.now().uptimeNanoseconds
         diagnosticLock.lock()
+        guard !flow.stopped else { diagnosticLock.unlock(); return true }
         diagnosticInputFrames &+= 1
-        lastInputNanoseconds = DispatchTime.now().uptimeNanoseconds
-        if queuedFrames >= Self.maximumQueuedFrames {
-            rejectFrame = true
-        } else {
-            queuedFrames += 1
-        }
+        lastInputNanoseconds = receivedAt
+        let rejectFrame = !flow.reserve(bytes: annexB.count)
         let inputNumber = diagnosticInputFrames
         diagnosticLock.unlock()
 
@@ -71,9 +62,9 @@ final class VideoDecoder: @unchecked Sendable {
         }
 
         decodeQueue.async { [self] in
-            let accepted = decodeNow(annexB)
+            let accepted = decodeNow(annexB, receivedAt: receivedAt)
             diagnosticLock.lock()
-            queuedFrames = max(0, queuedFrames - 1)
+            flow.complete(bytes: annexB.count)
             diagnosticLock.unlock()
             if !accepted {
                 signalRecoveryNeeded("VideoToolbox rejected frame")
@@ -84,7 +75,7 @@ final class VideoDecoder: @unchecked Sendable {
 
     func prepareForRecovery() {
         diagnosticLock.lock()
-        recoveryRequested = true
+        flow.requestRecovery()
         diagnosticLock.unlock()
     }
 
@@ -94,15 +85,32 @@ final class VideoDecoder: @unchecked Sendable {
         return HealthSnapshot(
             inputFrames: diagnosticInputFrames,
             outputFrames: diagnosticOutputFrames,
-            queuedFrames: queuedFrames,
+            queuedFrames: flow.pendingFrames,
             lastInputNanoseconds: lastInputNanoseconds,
             lastOutputNanoseconds: lastOutputNanoseconds
         )
     }
 
-    private func decodeNow(_ annexB: Data) -> Bool {
+    // Mark stopped immediately; invalidate on the decode queue after its active
+    // synchronous decode returns. No network or main-thread join is required.
+    func stop() {
         diagnosticLock.lock()
-        let mustReset = recoveryRequested
+        guard !flow.stopped else { diagnosticLock.unlock(); return }
+        flow.stop()
+        diagnosticLock.unlock()
+        decodeQueue.async { [self] in
+            if let session { VTDecompressionSessionInvalidate(session) }
+            session = nil
+            formatDescription = nil
+            parameterSets.removeAll()
+        }
+    }
+
+    private func decodeNow(_ annexB: Data, receivedAt: UInt64) -> Bool {
+        diagnosticLock.lock()
+        guard !flow.stopped else { diagnosticLock.unlock(); return true }
+        let mustReset = flow.consumeReset()
+        let recoveryGeneration = flow.recoveryGeneration
         diagnosticLock.unlock()
         if mustReset {
             if let session {
@@ -151,6 +159,14 @@ final class VideoDecoder: @unchecked Sendable {
         // Submitting this header to VideoToolbox produces -12909 and used to
         // trigger an unnecessary recovery cycle at every stream start.
         guard containsVideoSlice else { return true }
+
+        // Keep codec headers above, but never replay stale gameplay. Once a
+        // reference frame is dropped, recover at a keyframe instead of decoding
+        // its dependent P-frames against a broken reference chain.
+        if VideoDecodeState.isExpired(receivedAt: receivedAt, now: DispatchTime.now().uptimeNanoseconds) {
+            signalRecoveryNeeded("compressed frame exceeded latency budget")
+            return true
+        }
 
         if waitingForKeyframe && !containsKeyframe {
             return true
@@ -208,12 +224,10 @@ final class VideoDecoder: @unchecked Sendable {
         let status = VTDecompressionSessionDecodeFrame(
             session,
             sampleBuffer: sampleBuffer,
-            // This callback runs on Chiaki's video-receiver thread. Synchronous
-            // VideoToolbox work blocks packet intake and can eventually starve
-            // the receiver completely. Real-time asynchronous decode keeps that
-            // network path moving; MetalVideoRenderer independently retains only
-            // the newest decoded frame, so stale frames never queue for display.
-            flags: [._EnableAsynchronousDecompression],
+            // This runs on our private decodeQueue, never the network thread.
+            // With both asynchronous and temporal flags cleared, output completes
+            // before return, so the queue budget includes VideoToolbox work too.
+            flags: [],
             frameRefcon: nil,
             infoFlagsOut: &infoFlags
         )
@@ -228,7 +242,7 @@ final class VideoDecoder: @unchecked Sendable {
         } else if containsKeyframe {
             waitingForKeyframe = false
             diagnosticLock.lock()
-            recoveryRequested = false
+            flow.finishRecovery(generation: recoveryGeneration)
             diagnosticLock.unlock()
         }
         return status == noErr
@@ -244,10 +258,9 @@ final class VideoDecoder: @unchecked Sendable {
     @discardableResult
     private func markRecoveryNeeded() -> Bool {
         diagnosticLock.lock()
-        let wasAlreadyRequested = recoveryRequested
-        recoveryRequested = true
+        let shouldNotify = flow.requestRecovery()
         diagnosticLock.unlock()
-        return !wasAlreadyRequested
+        return shouldNotify
     }
 
     private func createFormatDescription() -> Bool {
@@ -302,6 +315,7 @@ final class VideoDecoder: @unchecked Sendable {
                     return
                 }
                 decoder.diagnosticLock.lock()
+                guard !decoder.flow.stopped else { decoder.diagnosticLock.unlock(); return }
                 decoder.diagnosticOutputFrames &+= 1
                 decoder.lastOutputNanoseconds = DispatchTime.now().uptimeNanoseconds
                 if !decoder.didLogDecodedFrame {
