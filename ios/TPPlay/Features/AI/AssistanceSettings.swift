@@ -80,17 +80,20 @@ struct AssistanceSettings: View {
                     Button("وضع التتبّع السريع والانتقال للهدف القريب") {
                         model.emergencyStop(reason: "أعد تفعيل المساعدة يدويًا بعد تغيير إعدادات التتبّع")
                         vision.prepareHybridTracking()
-                        vision.rate = 12
+                        vision.rate = 30
+                        vision.showPlayerBoxes = true
                         model.configuration.tracking = true
                         model.configuration.switchOnLoss = true
-                        model.configuration.lossDelay = 0.15
+                        model.configuration.lossDelay = 0.06
                         model.configuration.staleAfter = 0.20
-                        model.configuration.response = 0.04
+                        model.configuration.response = 0.02
+                        model.configuration.strength = 2.4
+                        model.configuration.maxStick = 0.60
                         model.configuration.radius = 0.30
                         savedNotice = "تم ضبط الاستجابة السريعة مؤقتًا. اضغط حفظ الإعدادات وفعّل المساعدة يدويًا."
                     }
                     .buttonStyle(.borderedProminent)
-                    Text("يحافظ على هوية الهدف المؤكد حتى لو تحرك خارج نطاق الالتقاط الأولي، ويتحول إلى أقرب هدف مؤكّد من موقعه السابق عند فقده. اختفاء الهدف لا يثبت موته؛ لا يتحرك التصويب إلى هدف غير مرئي. تحليل 12 مرة/ثانية حد أقصى مطلوب وليس أداءً مضمونًا.")
+                    Text("يحافظ على هوية الهدف المؤكد حتى لو تحرك خارج نطاق الالتقاط الأولي، ويتحول إلى أقرب هدف مؤكّد من موقعه السابق عند فقده. اختفاء الهدف لا يثبت موته؛ لا يتحرك التصويب إلى هدف غير مرئي. تحليل حتى 30 مرة/ثانية حد أقصى مطلوب وليس أداءً مضمونًا.")
                         .font(.footnote)
                     if vision.colorMode {
                         Toggle("اشتراط جسم مكتشف مع لون الخصم", isOn: $vision.hybridMode)
@@ -106,7 +109,7 @@ struct AssistanceSettings: View {
                     valueSlider("زمن التنعيم", value: $model.configuration.response, range: 0.02...0.5)
                     Toggle("عكس المحور الرأسي", isOn: $model.configuration.invertY)
                     Toggle("الانتقال لهدف آخر عند اختفاء الحالي", isOn: $model.configuration.switchOnLoss)
-                    valueSlider("مهلة فقد الهدف بالثواني", value: $model.configuration.lossDelay, range: 0.15...2)
+                    valueSlider("مهلة فقد الهدف بالثواني", value: $model.configuration.lossDelay, range: 0.05...2)
                     Text("بدون الانتقال التلقائي: اترك L2 واضغطه مجددًا لاختيار هدف جديد. تُوقف الحركة عند تقادم الصورة؛ لا يستمر التصويب نحو موقع قديم.").font(.footnote)
                 }
                 VelmiraSection("لون العلامة فوق الرأس") {

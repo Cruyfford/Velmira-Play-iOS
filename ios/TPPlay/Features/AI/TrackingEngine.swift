@@ -147,26 +147,25 @@ struct TrackingEngine {
                     selected = visible.filter { overlap(prior, sample.boxes[$0]) >= 0.12 }
                         .max { overlap(prior, sample.boxes[$0]) < overlap(prior, sample.boxes[$1]) }
                 }
-                if selected == nil && now - lastSeen >= clamp(c.lossDelay, 0.15, 2) {
+                if selected == nil && now - lastSeen >= clamp(c.lossDelay, 0.05, 2) {
                     // Lost identity is not proof of an elimination.
-                    locked = nil
-                    lockedID = nil
                     if c.switchOnLoss {
                         // Prefer another confirmed player close to the last
                         // location, not an arbitrary distant screen candidate.
                         let lastPosition = point(prior, sample.colorMode, c)
                         let handoffRadius = clamp(c.radius, 0.12, 0.28)
-                        selected = acquisition.filter {
+                        selected = visible.filter {
                             distance(point(sample.boxes[$0], sample.colorMode, c),
                                      lastPosition) <= handoffRadius
                         }.min {
                             distance(point(sample.boxes[$0], sample.colorMode, c), lastPosition) <
                                 distance(point(sample.boxes[$1], sample.colorMode, c), lastPosition)
                         }
-                        // If no nearby confirmed player exists, require a new
-                        // L2 press instead of jumping across the screen.
-                        if selected == nil { blockedUntilRelease = true }
+                        // Keep the last identity/location while waiting for a
+                        // nearby fresh candidate. Missing targets never emit input.
                     } else {
+                        locked = nil
+                        lockedID = nil
                         blockedUntilRelease = true
                     }
                 }
@@ -179,6 +178,9 @@ struct TrackingEngine {
             }
             if let selected {
                 let box = sample.boxes[selected]
+                if let oldID = lockedID, oldID != identity(selected) {
+                    smoothX = 0; smoothY = 0
+                }
                 locked = box; lockedID = identity(selected); lastSeen = sample.capturedAt
                 let target = point(box, sample.colorMode, c)
                 out.target = target
@@ -188,6 +190,10 @@ struct TrackingEngine {
                 let desiredY = abs(dy) < c.deadZone ? 0 : clamp(dy * clamp(c.strength, 0.1, 5), -cap, cap) * (c.invertY ? -1 : 1)
                 let dt = clamp(now - (previousTick ?? now - 1 / 60), 0, 0.1)
                 let alpha = 1 - exp(-dt / clamp(c.response, 0.02, 0.5))
+                // Brake immediately at the aim point or after crossing it.
+                // Otherwise smoothing can continue pushing away from the target.
+                if desiredX == 0 || smoothX * desiredX < 0 { smoothX = 0 }
+                if desiredY == 0 || smoothY * desiredY < 0 { smoothY = 0 }
                 smoothX += (desiredX - smoothX) * alpha
                 smoothY += (desiredY - smoothY) * alpha
                 out.x += smoothX; out.y += smoothY

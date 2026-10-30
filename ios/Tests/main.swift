@@ -232,3 +232,35 @@ require(PlayerVisualCues.proximity(for: CGRect(x: 0, y: 0.2, width: 0.1, height:
         "Small visible bodies are classified as visually distant")
 print("Fast identity retention, near handoff, proximity checks passed")
 
+// A nearby handoff is relative to the lost player, even at the screen edge.
+_ = fastStep(110, l2: 0, boxes: [], ids: [])
+_ = fastStep(110.1, boxes: [initial], ids: [fastID])
+_ = fastStep(110.2, boxes: [moved], ids: [fastID])
+let edgeNeighbour = CGRect(x: 0.84, y: 0.28, width: 0.08, height: 0.32)
+let edgeOutput = fastStep(110.4, boxes: [edgeNeighbour], ids: [nextID])
+require(edgeOutput.target != nil && edgeOutput.target!.x > 0.85,
+        "Nearby handoff works outside the original crosshair acquisition circle")
+// Brief loss emits no stale input, but does not permanently disable reacquisition.
+require(fastStep(110.6, boxes: [], ids: []).x == 0, "No steering during visual loss")
+require(fastStep(110.7, boxes: [edgeNeighbour], ids: [nextID]).target != nil,
+        "Same identity can return without releasing L2")
+// Fast mode respects the configured short loss delay.
+_ = fastStep(120, l2: 0, boxes: [], ids: [])
+fastConfig.lossDelay = 0.06
+_ = fastStep(120.1, boxes: [initial], ids: [fastID])
+require(fastStep(120.13, boxes: [nearby], ids: [nextID]).target == nil,
+        "Fast handoff still waits for configured loss interval")
+require(fastStep(120.17, boxes: [nearby], ids: [nextID]).target != nil,
+        "Fast handoff is not clamped to the old 150ms minimum")
+// On fresh center/crossing observations, residual smoothing must not push away.
+_ = fastStep(130, l2: 0, boxes: [], ids: [])
+fastConfig.response = 0.5
+_ = fastStep(130.1, boxes: [initial], ids: [fastID])
+let centeredBox = CGRect(x: 0.46, y: 0.34, width: 0.08, height: 0.32)
+let atCenter = fastStep(130.12, boxes: [centeredBox], ids: [fastID])
+require(atCenter.x == 0 && atCenter.y == 0, "Brake at target instead of retaining smoothed input")
+_ = fastStep(130.14, boxes: [initial], ids: [fastID])
+let crossedBox = CGRect(x: 0.40, y: 0.34, width: 0.08, height: 0.32)
+require(fastStep(130.16, boxes: [crossedBox], ids: [fastID]).x < 0,
+        "Direction reversal never carries rightward smoothing into a left target")
+print("Edge handoff, reacquisition, fast delay and aim braking checks passed")
