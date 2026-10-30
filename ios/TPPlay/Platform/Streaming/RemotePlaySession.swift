@@ -650,7 +650,10 @@ final class RemotePlaySession: ObservableObject {
         inputSuspended = false
         assistanceEngine.reset()
         if AssistanceState.shared.armed {
-            AssistanceState.shared.report(target: nil, status: "مفعّلة — اترك L2 وR2 ثم اضغط L2")
+            AssistanceState.shared.report(target: nil, status:
+                AssistanceState.shared.configuration.trackingWithoutL2 == true
+                    ? "مفعّلة بدون L2 — اترك الزنادين أولًا"
+                    : "مفعّلة — اترك L2 وR2 ثم اضغط L2")
         }
     }
 
@@ -672,8 +675,11 @@ final class RemotePlaySession: ObservableObject {
         if result.fire { outgoing.r2 = 255 }
         if result.switchWeapon { outgoing.buttons |= 1 << 3 }
         _ = tp_play_session_set_controller(session, &outgoing)
+        let waitingStatus = assistance.configuration.trackingWithoutL2 == true
+            ? "مفعّل بدون L2 — بانتظار هدف حديث"
+            : "مفعّل — بانتظار L2 وهدف حديث"
         assistance.report(target: result.target, status: !assistance.armed ? "متوقف" :
-            (result.target == nil ? "مفعّل — بانتظار L2 وهدف حديث" : "تتبّع هدف محتمل"))
+            (result.target == nil ? waitingStatus : "تتبّع هدف محتمل"))
     }
 
     fileprivate func receiveEvent(type: Int32, value: Int32, message: String?) {

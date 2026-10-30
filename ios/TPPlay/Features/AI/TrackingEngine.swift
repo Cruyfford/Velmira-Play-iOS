@@ -2,6 +2,9 @@ import Foundation
 
 struct AssistanceConfiguration: Codable, Equatable {
     var tracking = true
+    // Optional fields preserve decoding of previously saved configurations.
+    var trackingWithoutL2: Bool? = nil
+    var fullScreenAcquisition: Bool? = nil
     var radius = 0.22
     var strength = 1.2
     var maxStick = 0.35
@@ -88,18 +91,23 @@ struct TrackingEngine {
             return out
         }
         defer { previousL2 = aim; previousR2 = shoot; previousTick = now }
-        guard aim else {
+        guard aim || (c.tracking && c.trackingWithoutL2 == true) else {
             locked = nil; lockedID = nil; blockedUntilRelease = false; scopeStarted = nil; swapAt = nil
             quickFired = false; smoothX = 0; smoothY = 0
             return out
         }
-        if !previousL2 {
+        if !aim {
+            scopeStarted = nil; swapAt = nil; quickFired = false
+            // A physical release still clears the legacy no-switch latch.
+            if previousL2 { blockedUntilRelease = false }
+        }
+        if aim && !previousL2 {
             scopeStarted = c.quickScope ? now : nil
             quickFired = false
         }
         if !c.quickScope { scopeStarted = nil }
         if !c.silentShot { swapAt = nil }
-        if c.silentShot && shoot && !previousR2 { swapAt = now + clamp(c.switchDelay, 0.03, 1) }
+        if aim && c.silentShot && shoot && !previousR2 { swapAt = now + clamp(c.switchDelay, 0.03, 1) }
         if let start = scopeStarted {
             let fireStart = start + clamp(c.scopeDelay, 0.05, 2)
             let fireEnd = fireStart + clamp(c.shotDuration, 0.03, 0.3)
@@ -129,7 +137,7 @@ struct TrackingEngine {
                     box.minX >= 0 && box.minY >= 0 &&
                     box.maxX <= 1 && box.maxY <= 1
             }
-            let acquisition = visible.filter {
+            let acquisition = c.fullScreenAcquisition == true ? visible : visible.filter {
                 distance(point(sample.boxes[$0], sample.colorMode, c), center) <=
                     clamp(c.radius, 0.05, 0.5)
             }
@@ -147,26 +155,25 @@ struct TrackingEngine {
                     selected = visible.filter { overlap(prior, sample.boxes[$0]) >= 0.12 }
                         .max { overlap(prior, sample.boxes[$0]) < overlap(prior, sample.boxes[$1]) }
                 }
-                if selected == nil && now - lastSeen >= clamp(c.lossDelay, 0.15, 2) {
+                if selected == nil && now - lastSeen >= clamp(c.lossDelay, 0.05, 2) {
                     // Lost identity is not proof of an elimination.
-                    locked = nil
-                    lockedID = nil
                     if c.switchOnLoss {
                         // Prefer another confirmed player close to the last
                         // location, not an arbitrary distant screen candidate.
                         let lastPosition = point(prior, sample.colorMode, c)
                         let handoffRadius = clamp(c.radius, 0.12, 0.28)
-                        selected = acquisition.filter {
+                        selected = visible.filter {
                             distance(point(sample.boxes[$0], sample.colorMode, c),
                                      lastPosition) <= handoffRadius
                         }.min {
                             distance(point(sample.boxes[$0], sample.colorMode, c), lastPosition) <
                                 distance(point(sample.boxes[$1], sample.colorMode, c), lastPosition)
                         }
-                        // If no nearby confirmed player exists, require a new
-                        // L2 press instead of jumping across the screen.
-                        if selected == nil { blockedUntilRelease = true }
+                        // Keep the last identity/location while waiting for a
+                        // nearby fresh candidate. Missing targets never emit input.
                     } else {
+                        locked = nil
+                        lockedID = nil
                         blockedUntilRelease = true
                     }
                 }
@@ -179,6 +186,9 @@ struct TrackingEngine {
             }
             if let selected {
                 let box = sample.boxes[selected]
+                if let oldID = lockedID, oldID != identity(selected) {
+                    smoothX = 0; smoothY = 0
+                }
                 locked = box; lockedID = identity(selected); lastSeen = sample.capturedAt
                 let target = point(box, sample.colorMode, c)
                 out.target = target
@@ -188,6 +198,10 @@ struct TrackingEngine {
                 let desiredY = abs(dy) < c.deadZone ? 0 : clamp(dy * clamp(c.strength, 0.1, 5), -cap, cap) * (c.invertY ? -1 : 1)
                 let dt = clamp(now - (previousTick ?? now - 1 / 60), 0, 0.1)
                 let alpha = 1 - exp(-dt / clamp(c.response, 0.02, 0.5))
+                // Brake immediately at the aim point or after crossing it.
+                // Otherwise smoothing can continue pushing away from the target.
+                if desiredX == 0 || smoothX * desiredX < 0 { smoothX = 0 }
+                if desiredY == 0 || smoothY * desiredY < 0 { smoothY = 0 }
                 smoothX += (desiredX - smoothX) * alpha
                 smoothY += (desiredY - smoothY) * alpha
                 out.x += smoothX; out.y += smoothY
@@ -196,7 +210,7 @@ struct TrackingEngine {
             smoothX = 0; smoothY = 0
             if manual { locked = nil; lockedID = nil }
         }
-        if c.recoil && (shoot || out.fire) && !manual {
+        if aim && c.recoil && (shoot || out.fire) && !manual {
             out.x += clamp(c.recoilX, -0.3, 0.3)
             out.y += clamp(c.recoilY, -0.3, 0.3)
         }

@@ -58,8 +58,8 @@ struct AssistanceSettings: View {
             ScrollView {
                 VStack(spacing: 16) {
                 VelmiraSection("التحكم الفعلي — تجريبي") {
-                    Toggle("تفعيل المساعدة عند L2", isOn: $model.armed)
-                    Text("بعد التفعيل اترك L2 وR2 أولًا، ثم اضغط L2. حرّك العصا بقوة لاستعادة أولوية التحكم اليدوي.")
+                    Toggle("تفعيل المساعدة", isOn: $model.armed)
+                    Text("بعد التفعيل اترك L2 وR2 أولًا. عند تشغيل خيار التتبّع بدون L2 تبدأ الحركة تلقائيًا؛ وإلا اضغط L2. حرّك العصا بقوة لاستعادة أولوية التحكم اليدوي.")
                     Button("إيقاف جميع المساعدات", role: .destructive) { model.emergencyStop() }
                     Text(model.status)
                     if !model.armed, let reason = model.lastStopReason {
@@ -80,23 +80,50 @@ struct AssistanceSettings: View {
                     Button("وضع التتبّع السريع والانتقال للهدف القريب") {
                         model.emergencyStop(reason: "أعد تفعيل المساعدة يدويًا بعد تغيير إعدادات التتبّع")
                         vision.prepareHybridTracking()
-                        vision.rate = 12
+                        vision.rate = 30
+                        vision.showPlayerBoxes = true
                         model.configuration.tracking = true
                         model.configuration.switchOnLoss = true
-                        model.configuration.lossDelay = 0.15
+                        model.configuration.lossDelay = 0.06
                         model.configuration.staleAfter = 0.20
-                        model.configuration.response = 0.04
+                        model.configuration.response = 0.02
+                        model.configuration.strength = 2.4
+                        model.configuration.maxStick = 0.60
                         model.configuration.radius = 0.30
                         savedNotice = "تم ضبط الاستجابة السريعة مؤقتًا. اضغط حفظ الإعدادات وفعّل المساعدة يدويًا."
                     }
                     .buttonStyle(.borderedProminent)
-                    Text("يحافظ على هوية الهدف المؤكد حتى لو تحرك خارج نطاق الالتقاط الأولي، ويتحول إلى أقرب هدف مؤكّد من موقعه السابق عند فقده. اختفاء الهدف لا يثبت موته؛ لا يتحرك التصويب إلى هدف غير مرئي. تحليل 12 مرة/ثانية حد أقصى مطلوب وليس أداءً مضمونًا.")
+                    Text("يحافظ على هوية الهدف المؤكد حتى لو تحرك خارج نطاق الالتقاط الأولي، ويتحول إلى أقرب هدف مؤكّد من موقعه السابق عند فقده. اختفاء الهدف لا يثبت موته؛ لا يتحرك التصويب إلى هدف غير مرئي. تحليل حتى 30 مرة/ثانية حد أقصى مطلوب وليس أداءً مضمونًا.")
                         .font(.footnote)
                     if vision.colorMode {
                         Toggle("اشتراط جسم مكتشف مع لون الخصم", isOn: $vision.hybridMode)
                         Text("في الوضع المدمج يتبع التصويب موضع الجسم المختار؛ الإزاحة من الاسم تخص وضع اللون وحده.").font(.footnote)
                     }
                     Toggle("تحريك التصويب نحو الهدف", isOn: $model.configuration.tracking)
+                    Toggle("التتبّع بدون ضغط L2", isOn: Binding(
+                        get: { model.configuration.trackingWithoutL2 == true },
+                        set: { model.configuration.trackingWithoutL2 = $0 }))
+                    Toggle("التقاط القريب والبعيد في كامل الصورة", isOn: Binding(
+                        get: { model.configuration.fullScreenAcquisition == true },
+                        set: { model.configuration.fullScreenAcquisition = $0 }))
+                    Text("يختار الهدف المؤكد الأقرب لمركز التصويب، مهما كان قربه أو بعده التقديري، ويحافظ عليه أثناء ظهوره. التتبّع بدون L2 لا يضغط إطلاق النار أو تبديل السلاح. أوقف المساعدة لإيقاف الحركة.").font(.footnote)
+                    Button("تجهيز تتبّع البرتقالي بدون L2 — قريب وبعيد") {
+                        model.emergencyStop(reason: "احفظ الإعدادات ثم فعّل المساعدة")
+                        vision.prepareHybridTracking()
+                        vision.showPlayerBoxes = true
+                        vision.rate = 30
+                        model.configuration.tracking = true
+                        vision.colorHue = 0.0833
+                        model.configuration.trackingWithoutL2 = true
+                        model.configuration.fullScreenAcquisition = true
+                        model.configuration.switchOnLoss = true
+                        model.configuration.lossDelay = 0.06
+                        model.configuration.response = 0.02
+                        model.configuration.staleAfter = 0.20
+                        model.configuration.strength = 2.4
+                        model.configuration.maxStick = 0.60
+                        savedNotice = "تم تجهيز التتبّع بدون L2. احفظ الإعدادات ثم فعّل المساعدة."
+                    }.buttonStyle(.borderedProminent)
                     if !vision.enabled {
                         Button("تشغيل تحليل الصورة") { vision.enabled = true }
                     }
@@ -106,13 +133,14 @@ struct AssistanceSettings: View {
                     valueSlider("زمن التنعيم", value: $model.configuration.response, range: 0.02...0.5)
                     Toggle("عكس المحور الرأسي", isOn: $model.configuration.invertY)
                     Toggle("الانتقال لهدف آخر عند اختفاء الحالي", isOn: $model.configuration.switchOnLoss)
-                    valueSlider("مهلة فقد الهدف بالثواني", value: $model.configuration.lossDelay, range: 0.15...2)
+                    valueSlider("مهلة فقد الهدف بالثواني", value: $model.configuration.lossDelay, range: 0.05...2)
                     Text("بدون الانتقال التلقائي: اترك L2 واضغطه مجددًا لاختيار هدف جديد. تُوقف الحركة عند تقادم الصورة؛ لا يستمر التصويب نحو موقع قديم.").font(.footnote)
                 }
                 VelmiraSection("لون العلامة فوق الرأس") {
                     Toggle("استخدام تتبّع اللون", isOn: $vision.colorMode)
                     HStack(spacing: 12) {
                         Button("أحمر") { vision.colorHue = 0 }
+                        Button("برتقالي") { vision.colorHue = 0.0833 }
                         Button("أرجواني") { vision.colorHue = 0.88 }
                         Button("أصفر") { vision.colorHue = 0.16 }
                     }.buttonStyle(.bordered)
