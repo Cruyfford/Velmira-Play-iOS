@@ -56,6 +56,9 @@ struct HumanAnalysis: Sendable {
     /// Fresh Vision person rectangles used only for green visual overlays.
     /// These are potential players (including allies), not enemy confirmations.
     var visiblePlayerBoxes: [CGRect] = []
+    /// nil means no HUD text check was performed on this frame.
+    /// A detected HUD cue is not definitive proof about a specific player.
+    var eliminationCue: Bool? = nil
 
     func trackingSample(colorMode: Bool, hybridMode: Bool) -> TrackingSample {
         guard error == nil else {
@@ -104,3 +107,34 @@ enum HybridTargetFusion {
     }
 }
 
+
+
+/// HUD text and box-size heuristics. No metric distance or confirmed death data
+/// comes from Remote Play; these are visual, best-effort annotations only.
+enum PlayerVisualCues {
+    static func proximity(for box: CGRect) -> String {
+        if box.height >= 0.30 { return "قريب جدًا" }
+        if box.height >= 0.17 { return "قريب" }
+        if box.height >= 0.09 { return "متوسط" }
+        return "بعيد"
+    }
+
+    static func showsEliminationNotice(_ rawText: String) -> Bool {
+        let t = rawText.uppercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        // Avoid 'KILLS', scoreboard columns, players' names, and killstreak text.
+        return t.hasPrefix("KILLED:") ||
+               t.hasPrefix("KILLED ") ||
+               t == "ELIMINATED" ||
+               t.hasPrefix("ELIMINATED ") ||
+               t == "ELIMINATION" ||
+               t.hasPrefix("ELIMINATION ")
+    }
+
+    static func sameVisiblePlayer(_ a: CGRect, _ b: CGRect) -> Bool {
+        let intersection = a.intersection(b)
+        if intersection.isNull { return false }
+        let union = a.width * a.height + b.width * b.height -
+            intersection.width * intersection.height
+        return union > 0 && intersection.width * intersection.height / union >= 0.30
+    }
+}
