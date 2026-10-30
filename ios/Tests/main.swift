@@ -264,3 +264,53 @@ let crossedBox = CGRect(x: 0.40, y: 0.34, width: 0.08, height: 0.32)
 require(fastStep(130.16, boxes: [crossedBox], ids: [fastID]).x < 0,
         "Direction reversal never carries rightward smoothing into a left target")
 print("Edge handoff, reacquisition, fast delay and aim braking checks passed")
+// Continuous tracking is opt-in and independent from L2-gated button macros.
+var continuous = TrackingEngine()
+var continuousConfig = AssistanceConfiguration()
+continuousConfig.trackingWithoutL2 = true
+continuousConfig.fullScreenAcquisition = true
+continuousConfig.pointY = 0.5
+continuousConfig.quickScope = true
+continuousConfig.silentShot = true
+continuousConfig.recoil = true
+let farBody = CGRect(x: 0.86, y: 0.6, width: 0.02, height: 0.06)
+let continuousID = UUID()
+func continuousStep(_ time: Double, l2: Double = 0, r2: Double = 0,
+                    armed: Bool = true, rawX: Double = 0,
+                    body: CGRect = farBody, age: Double = 0) -> AssistanceOutput {
+    continuous.step(now: time, armed: armed, l2: l2, r2: r2, rawX: rawX, rawY: 0,
+                    sample: TrackingSample(boxes: [body], capturedAt: time - age,
+                                           colorMode: false, targetIDs: [continuousID]),
+                    config: continuousConfig)
+}
+_ = continuousStep(200)
+let farWithoutL2 = continuousStep(200.1)
+require(farWithoutL2.target != nil && farWithoutL2.x > 0,
+        "Acquire small distant target outside initial radius without L2")
+for time in [200.4, 200.5, 200.65, 200.9] {
+    let output = continuousStep(time, r2: 1)
+    require(!output.fire && !output.switchWeapon,
+            "Continuous tracking must not trigger L2 button macros")
+}
+let largeBody = CGRect(x: 0.60, y: 0.2, width: 0.2, height: 0.5)
+require(continuousStep(201, body: largeBody).target != nil,
+        "Same identity stays tracked as body grows nearer")
+require(continuousStep(201.1, age: 1).target == nil,
+        "Continuous mode rejects stale video")
+require(continuousStep(201.2, rawX: 0.9).x == 0.9,
+        "Manual override still wins without L2")
+require(continuousStep(201.3, armed: false).target == nil,
+        "Disarming stops continuous mode")
+continuousConfig.trackingWithoutL2 = false
+_ = continuousStep(202)
+require(continuousStep(202.1).target == nil, "Legacy mode still requires L2")
+// Missing new keys must not discard old user settings.
+let encodedSettings = try JSONEncoder().encode(continuousConfig)
+var oldSettings = try JSONSerialization.jsonObject(with: encodedSettings) as! [String: Any]
+oldSettings.removeValue(forKey: "trackingWithoutL2")
+oldSettings.removeValue(forKey: "fullScreenAcquisition")
+let restoredSettings = try JSONDecoder().decode(AssistanceConfiguration.self,
+    from: JSONSerialization.data(withJSONObject: oldSettings))
+require(restoredSettings.trackingWithoutL2 != true && restoredSettings.strength == continuousConfig.strength,
+        "Existing settings decode without enabling continuous tracking")
+print("Continuous near/far tracking, macro isolation and settings migration passed")

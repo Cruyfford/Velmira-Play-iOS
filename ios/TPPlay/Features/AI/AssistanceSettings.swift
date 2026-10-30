@@ -58,8 +58,8 @@ struct AssistanceSettings: View {
             ScrollView {
                 VStack(spacing: 16) {
                 VelmiraSection("التحكم الفعلي — تجريبي") {
-                    Toggle("تفعيل المساعدة عند L2", isOn: $model.armed)
-                    Text("بعد التفعيل اترك L2 وR2 أولًا، ثم اضغط L2. حرّك العصا بقوة لاستعادة أولوية التحكم اليدوي.")
+                    Toggle("تفعيل المساعدة", isOn: $model.armed)
+                    Text("بعد التفعيل اترك L2 وR2 أولًا. عند تشغيل خيار التتبّع بدون L2 تبدأ الحركة تلقائيًا؛ وإلا اضغط L2. حرّك العصا بقوة لاستعادة أولوية التحكم اليدوي.")
                     Button("إيقاف جميع المساعدات", role: .destructive) { model.emergencyStop() }
                     Text(model.status)
                     if !model.armed, let reason = model.lastStopReason {
@@ -100,6 +100,30 @@ struct AssistanceSettings: View {
                         Text("في الوضع المدمج يتبع التصويب موضع الجسم المختار؛ الإزاحة من الاسم تخص وضع اللون وحده.").font(.footnote)
                     }
                     Toggle("تحريك التصويب نحو الهدف", isOn: $model.configuration.tracking)
+                    Toggle("التتبّع بدون ضغط L2", isOn: Binding(
+                        get: { model.configuration.trackingWithoutL2 == true },
+                        set: { model.configuration.trackingWithoutL2 = $0 }))
+                    Toggle("التقاط القريب والبعيد في كامل الصورة", isOn: Binding(
+                        get: { model.configuration.fullScreenAcquisition == true },
+                        set: { model.configuration.fullScreenAcquisition = $0 }))
+                    Text("يختار الهدف المؤكد الأقرب لمركز التصويب، مهما كان قربه أو بعده التقديري، ويحافظ عليه أثناء ظهوره. التتبّع بدون L2 لا يضغط إطلاق النار أو تبديل السلاح. أوقف المساعدة لإيقاف الحركة.").font(.footnote)
+                    Button("تجهيز تتبّع البرتقالي بدون L2 — قريب وبعيد") {
+                        model.emergencyStop(reason: "احفظ الإعدادات ثم فعّل المساعدة")
+                        vision.prepareHybridTracking()
+                        vision.showPlayerBoxes = true
+                        vision.rate = 30
+                        model.configuration.tracking = true
+                        vision.colorHue = 0.0833
+                        model.configuration.trackingWithoutL2 = true
+                        model.configuration.fullScreenAcquisition = true
+                        model.configuration.switchOnLoss = true
+                        model.configuration.lossDelay = 0.06
+                        model.configuration.response = 0.02
+                        model.configuration.staleAfter = 0.20
+                        model.configuration.strength = 2.4
+                        model.configuration.maxStick = 0.60
+                        savedNotice = "تم تجهيز التتبّع بدون L2. احفظ الإعدادات ثم فعّل المساعدة."
+                    }.buttonStyle(.borderedProminent)
                     if !vision.enabled {
                         Button("تشغيل تحليل الصورة") { vision.enabled = true }
                     }
@@ -116,6 +140,7 @@ struct AssistanceSettings: View {
                     Toggle("استخدام تتبّع اللون", isOn: $vision.colorMode)
                     HStack(spacing: 12) {
                         Button("أحمر") { vision.colorHue = 0 }
+                        Button("برتقالي") { vision.colorHue = 0.0833 }
                         Button("أرجواني") { vision.colorHue = 0.88 }
                         Button("أصفر") { vision.colorHue = 0.16 }
                     }.buttonStyle(.bordered)

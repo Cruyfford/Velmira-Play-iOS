@@ -2,6 +2,9 @@ import Foundation
 
 struct AssistanceConfiguration: Codable, Equatable {
     var tracking = true
+    // Optional fields preserve decoding of previously saved configurations.
+    var trackingWithoutL2: Bool? = nil
+    var fullScreenAcquisition: Bool? = nil
     var radius = 0.22
     var strength = 1.2
     var maxStick = 0.35
@@ -88,18 +91,23 @@ struct TrackingEngine {
             return out
         }
         defer { previousL2 = aim; previousR2 = shoot; previousTick = now }
-        guard aim else {
+        guard aim || (c.tracking && c.trackingWithoutL2 == true) else {
             locked = nil; lockedID = nil; blockedUntilRelease = false; scopeStarted = nil; swapAt = nil
             quickFired = false; smoothX = 0; smoothY = 0
             return out
         }
-        if !previousL2 {
+        if !aim {
+            scopeStarted = nil; swapAt = nil; quickFired = false
+            // A physical release still clears the legacy no-switch latch.
+            if previousL2 { blockedUntilRelease = false }
+        }
+        if aim && !previousL2 {
             scopeStarted = c.quickScope ? now : nil
             quickFired = false
         }
         if !c.quickScope { scopeStarted = nil }
         if !c.silentShot { swapAt = nil }
-        if c.silentShot && shoot && !previousR2 { swapAt = now + clamp(c.switchDelay, 0.03, 1) }
+        if aim && c.silentShot && shoot && !previousR2 { swapAt = now + clamp(c.switchDelay, 0.03, 1) }
         if let start = scopeStarted {
             let fireStart = start + clamp(c.scopeDelay, 0.05, 2)
             let fireEnd = fireStart + clamp(c.shotDuration, 0.03, 0.3)
@@ -129,7 +137,7 @@ struct TrackingEngine {
                     box.minX >= 0 && box.minY >= 0 &&
                     box.maxX <= 1 && box.maxY <= 1
             }
-            let acquisition = visible.filter {
+            let acquisition = c.fullScreenAcquisition == true ? visible : visible.filter {
                 distance(point(sample.boxes[$0], sample.colorMode, c), center) <=
                     clamp(c.radius, 0.05, 0.5)
             }
@@ -202,7 +210,7 @@ struct TrackingEngine {
             smoothX = 0; smoothY = 0
             if manual { locked = nil; lockedID = nil }
         }
-        if c.recoil && (shoot || out.fire) && !manual {
+        if aim && c.recoil && (shoot || out.fire) && !manual {
             out.x += clamp(c.recoilX, -0.3, 0.3)
             out.y += clamp(c.recoilY, -0.3, 0.3)
         }
