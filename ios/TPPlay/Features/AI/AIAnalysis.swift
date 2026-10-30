@@ -125,7 +125,7 @@ private final class RetainedVideoFrame: @unchecked Sendable {
 
 final class AIFrameAnalyzer: @unchecked Sendable {
     static let shared = AIFrameAnalyzer()
-    private let queue = DispatchQueue(label: "app.velmira.vision", qos: .utility)
+    private let queue = DispatchQueue(label: "app.velmira.vision", qos: .userInitiated)
     private let lock = NSLock()
     private var enabled = false
     private var paused = false
@@ -147,7 +147,7 @@ final class AIFrameAnalyzer: @unchecked Sendable {
         self.adaptiveBodyMarker = adaptiveBodyMarker
         self.color = color
         self.enabled = enabled; self.threshold = min(0.95, max(0.2, threshold))
-        self.rate = min(8, max(1, rate)); generation &+= 1
+        self.rate = min(12, max(1, rate)); generation &+= 1
     }
     func invalidate() { lock.lock(); generation &+= 1; lock.unlock() }
     func setPaused(_ value: Bool) {
@@ -364,6 +364,7 @@ struct AIAnalysisSettings: View {
                         Text("3").tag(3.0)
                         Text("5").tag(5.0)
                         Text("8").tag(8.0)
+                        Text("12 سريع").tag(12.0)
                     }.pickerStyle(.segmented)
                     Text("لا تعني هذه القيم معدل إطارات اللعبة. يُخفَّض التحليل تلقائيًا عند ارتفاع حرارة الجهاز.")
                 }
