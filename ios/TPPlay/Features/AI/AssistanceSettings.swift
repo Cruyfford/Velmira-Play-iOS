@@ -77,6 +77,21 @@ struct AssistanceSettings: View {
                         model.configuration.pointY = 0.5
                         savedNotice = "اختر لون علامة الخصم بالمعايرة، ثم احفظ الإعدادات وفعّل المساعدة عند L2."
                     }
+                    Button("وضع التتبّع السريع والانتقال للهدف القريب") {
+                        model.emergencyStop(reason: "أعد تفعيل المساعدة يدويًا بعد تغيير إعدادات التتبّع")
+                        vision.prepareHybridTracking()
+                        vision.rate = 12
+                        model.configuration.tracking = true
+                        model.configuration.switchOnLoss = true
+                        model.configuration.lossDelay = 0.15
+                        model.configuration.staleAfter = 0.20
+                        model.configuration.response = 0.04
+                        model.configuration.radius = 0.30
+                        savedNotice = "تم ضبط الاستجابة السريعة مؤقتًا. اضغط حفظ الإعدادات وفعّل المساعدة يدويًا."
+                    }
+                    .buttonStyle(.borderedProminent)
+                    Text("يحافظ على هوية الهدف المؤكد حتى لو تحرك خارج نطاق الالتقاط الأولي، ويتحول إلى أقرب هدف مؤكّد من موقعه السابق عند فقده. اختفاء الهدف لا يثبت موته؛ لا يتحرك التصويب إلى هدف غير مرئي. تحليل 12 مرة/ثانية حد أقصى مطلوب وليس أداءً مضمونًا.")
+                        .font(.footnote)
                     if vision.colorMode {
                         Toggle("اشتراط جسم مكتشف مع لون الخصم", isOn: $vision.hybridMode)
                         Text("في الوضع المدمج يتبع التصويب موضع الجسم المختار؛ الإزاحة من الاسم تخص وضع اللون وحده.").font(.footnote)
