@@ -201,7 +201,7 @@ let fastID = UUID(), nextID = UUID()
 let initial = CGRect(x: 0.52, y: 0.28, width: 0.08, height: 0.32)
 let moved = CGRect(x: 0.77, y: 0.28, width: 0.08, height: 0.32)
 let nearby = CGRect(x: 0.61, y: 0.28, width: 0.10, height: 0.32)
-let distant = CGRect(x: 0.30, y: 0.28, width: 0.08, height: 0.32)
+let distant = CGRect(x: 0.26, y: 0.28, width: 0.08, height: 0.32)
 func fastStep(_ now: Double, l2: Double = 1,
               boxes: [CGRect], ids: [UUID]) -> AssistanceOutput {
     fastEngine.step(now: now, armed: true, l2: l2, r2: 0, rawX: 0, rawY: 0,
