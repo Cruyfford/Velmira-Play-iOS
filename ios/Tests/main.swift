@@ -189,3 +189,46 @@ let crossingMiddle = CGRect(x: 0.43, y: 0.30, width: 0.20, height: 0.35)
 require(crossingFilter.update([crossingMiddle], at: 70.25, requiredFrames: 2).isEmpty,
         "An ambiguous crossing must not inherit either established identity")
 print("Ambiguous temporal association check passed")
+
+// Sticky confirmed target remains eligible outside the initial acquisition radius.
+var fastEngine = TrackingEngine()
+var fastConfig = AssistanceConfiguration()
+fastConfig.radius = 0.22
+fastConfig.pointY = 0.5
+fastConfig.switchOnLoss = true
+fastConfig.lossDelay = 0.15
+let fastID = UUID(), nextID = UUID()
+let initial = CGRect(x: 0.52, y: 0.28, width: 0.08, height: 0.32)
+let moved = CGRect(x: 0.77, y: 0.28, width: 0.08, height: 0.32)
+let nearby = CGRect(x: 0.61, y: 0.28, width: 0.10, height: 0.32)
+let distant = CGRect(x: 0.30, y: 0.28, width: 0.08, height: 0.32)
+func fastStep(_ now: Double, l2: Double = 1,
+              boxes: [CGRect], ids: [UUID]) -> AssistanceOutput {
+    fastEngine.step(now: now, armed: true, l2: l2, r2: 0, rawX: 0, rawY: 0,
+                    sample: TrackingSample(boxes: boxes, capturedAt: now,
+                                           colorMode: false, targetIDs: ids),
+                    config: fastConfig)
+}
+_ = fastStep(100, l2: 0, boxes: [], ids: [])
+let acquired = fastStep(100.1, boxes: [initial], ids: [fastID])
+require(acquired.target != nil, "Fast mode acquires a nearby confirmed player")
+let followed = fastStep(100.2, boxes: [moved], ids: [fastID])
+require(followed.target != nil && followed.target!.x > 0.8,
+        "Confirmed lock persists when moving outside original crosshair radius")
+require(fastStep(100.25, boxes: [nearby], ids: [nextID]).target == nil,
+        "Do not prematurely jump to different identity before loss timer")
+let switchedNear = fastStep(100.39, boxes: [nearby, distant], ids: [nextID, UUID()])
+require(switchedNear.target != nil && abs(switchedNear.target!.x - 0.66) < 0.001,
+        "Handoff picks nearby verified target instead of another distant screen candidate")
+_ = fastStep(100.5, l2: 0, boxes: [], ids: [])
+_ = fastStep(101.0, boxes: [initial], ids: [fastID])
+let noHandoff = fastStep(101.2, boxes: [distant], ids: [nextID])
+require(noHandoff.target == nil, "Avoid selecting a distant target on the lost-player frame")
+require(fastStep(101.3, boxes: [distant], ids: [nextID]).target == nil,
+        "Unrelated distant target stays blocked until L2 is released")
+require(PlayerVisualCues.proximity(for: CGRect(x: 0, y: 0.2, width: 0.1, height: 0.35)) == "قريب جدًا",
+        "Large visible bodies are classified as visually close")
+require(PlayerVisualCues.proximity(for: CGRect(x: 0, y: 0.2, width: 0.1, height: 0.06)) == "بعيد",
+        "Small visible bodies are classified as visually distant")
+print("Fast identity retention, near handoff, proximity checks passed")
+
