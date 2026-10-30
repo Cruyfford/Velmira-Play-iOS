@@ -53,6 +53,9 @@ struct HumanAnalysis: Sendable {
     let capturedAt: TimeInterval
     let milliseconds: Double
     let error: String?
+    /// Fresh Vision person rectangles used only for green visual overlays.
+    /// These are potential players (including allies), not enemy confirmations.
+    var visiblePlayerBoxes: [CGRect] = []
 
     func trackingSample(colorMode: Bool, hybridMode: Bool) -> TrackingSample {
         guard error == nil else {
