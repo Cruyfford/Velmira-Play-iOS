@@ -12,6 +12,7 @@ final class AIAnalysisState: ObservableObject {
     @Published var colorMode = true { didSet { configure() } }
     @Published var hybridMode = true { didSet { configure() } }
     @Published var adaptiveBodyMarker = true { didSet { configure() } }
+    @Published var showPlayerBoxes = true
     @Published var precisionMode = true { didSet { configure() } }
     private var persistence = StableDetectionFilter()
     @Published var colorHue = 0.0 { didSet { configure() } }
@@ -32,6 +33,7 @@ final class AIAnalysisState: ObservableObject {
     }
     private let settingsKey = "velmira.ai.explicitSave.v1"
     private let adaptiveMarkerKey = "velmira.ai.bodyMarker.v1"
+    private let playerBoxesKey = "velmira.ai.greenPlayerBoxes.v1"
 
     private init() {
         restoreSavedSettings()
@@ -46,11 +48,13 @@ final class AIAnalysisState: ObservableObject {
         guard let data = try? JSONEncoder().encode(value) else { return false }
         UserDefaults.standard.set(data, forKey: settingsKey)
         UserDefaults.standard.set(adaptiveBodyMarker, forKey: adaptiveMarkerKey)
+        UserDefaults.standard.set(showPlayerBoxes, forKey: playerBoxesKey)
         return true
     }
 
     func restoreSavedSettings() {
         adaptiveBodyMarker = UserDefaults.standard.object(forKey: adaptiveMarkerKey) as? Bool ?? true
+        showPlayerBoxes = UserDefaults.standard.object(forKey: playerBoxesKey) as? Bool ?? true
         guard let data = UserDefaults.standard.data(forKey: settingsKey),
               let value = try? JSONDecoder().decode(SavedAISettings.self, from: data) else {
             return
@@ -105,7 +109,8 @@ final class AIAnalysisState: ObservableObject {
         }
         result = HumanAnalysis(detections: confirmed, imageSize: value.imageSize,
                                capturedAt: value.capturedAt,
-                               milliseconds: value.milliseconds, error: value.error)
+                               milliseconds: value.milliseconds, error: value.error,
+                               visiblePlayerBoxes: value.visiblePlayerBoxes)
     }
     func clear() {
         result = nil
@@ -178,20 +183,42 @@ final class AIFrameAnalyzer: @unchecked Sendable {
             let size = CGSize(width: CVPixelBufferGetWidth(frame.buffer), height: CVPixelBufferGetHeight(frame.buffer))
             let report: HumanAnalysis
             do {
+                // Analyze visible people independently of colored names or UI text.
+                let personRequest = VNDetectHumanRectanglesRequest()
+                personRequest.upperBodyOnly = false
+                try VNImageRequestHandler(cvPixelBuffer: frame.buffer, orientation: .up, options: [:])
+                    .perform([personRequest])
+                let peopleResults = (personRequest.results ?? []).filter {
+                    $0.confidence >= minimum &&
+                    $0.boundingBox.width >= 0.015 && $0.boundingBox.height >= 0.055 &&
+                    $0.boundingBox.minX >= 0 && $0.boundingBox.minY >= 0 &&
+                    $0.boundingBox.maxX <= 1 && $0.boundingBox.maxY <= 1
+                }
+                let people = Array(peopleResults.prefix(24)).map(\.boundingBox)
                 let detections: [HumanDetection]
                 if useColor {
                     let colorBoxes = try ColorTargetDetector.detect(frame.buffer, configuration: colorConfiguration)
-                    var people = [CGRect]()
-                    if (useHybrid || showAdaptiveMarker) && !colorBoxes.isEmpty {
-                        let personRequest = VNDetectHumanRectanglesRequest()
-                        personRequest.upperBodyOnly = false
-                        do {
-                            try VNImageRequestHandler(cvPixelBuffer: frame.buffer, orientation: .up, options: [:])
-                                .perform([personRequest])
-                            people = (personRequest.results ?? []).filter {
-                                $0.confidence >= minimum
-                            }.map { $0.boundingBox }
-                        } catch {
+                    if useHybrid {
+                        detections = HybridTargetFusion.associate(markers: colorBoxes, people: people)
+                    } else {
+                        detections = colorBoxes.map { marker in
+                            let match = showAdaptiveMarker
+                                ? VisualBodyAssociation.bestPerson(for: marker, among: people) : nil
+                            return HumanDetection(id: UUID(), box: marker, confidence: 0,
+                                                  humanSupported: match != nil,
+                                                  matchedPersonBox: match)
+                        }
+                    }
+                } else {
+                    detections = peopleResults.prefix(24).map {
+                        HumanDetection(id: UUID(), box: $0.boundingBox, confidence: $0.confidence,
+                                       humanSupported: true, matchedPersonBox: $0.boundingBox)
+                    }
+                }
+                report = HumanAnalysis(detections: detections, imageSize: size, capturedAt: now,
+                                       milliseconds: (ProcessInfo.processInfo.systemUptime - start) * 1000,
+                                       error: nil, visiblePlayerBoxes: people)
+            } catch {
                             if useHybrid { throw error }
                             // Color-only mode can still show its unverified markers.
                         }
@@ -235,7 +262,7 @@ struct AIAnalysisOverlay: View {
     @ObservedObject private var assistance = AssistanceState.shared
     @ObservedObject private var model = AIAnalysisState.shared
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 0.2)) { _ in
+        TimelineView(.periodic(from: .now, by: 0.1)) { _ in
             GeometryReader { geometry in
                 if model.enabled, let result = model.result,
                    ProcessInfo.processInfo.systemUptime - result.capturedAt < 0.8,
@@ -252,18 +279,16 @@ struct AIAnalysisOverlay: View {
                             .overlay { Circle().stroke(.black, lineWidth: 1) }
                             .position(x: left + target.x * width, y: top + target.y * height)
                     }
+                    if model.showPlayerBoxes {
+                        ForEach(result.visiblePlayerBoxes.indices, id: \.self) { index in
+                            let body = result.visiblePlayerBoxes[index]
+                            Rectangle().stroke(Color.green, lineWidth: 2.5)
+                                .frame(width: body.width * width, height: body.height * height)
+                                .position(x: left + body.midX * width,
+                                          y: top + (1 - body.midY) * height)
+                        }
+                    }
                     ForEach(result.detections) { detection in
-                        let r = detection.box
-                        Rectangle().stroke(Color.cyan, lineWidth: 2)
-                            .frame(width: r.width * width, height: r.height * height)
-                            .overlay(alignment: .topLeading) {
-                                Text(model.colorMode
-                                     ? (detection.humanSupported ? "لون + شخص محتمل" : "علامة لون")
-                                     : "شخص محتمل \(Int(detection.confidence * 100))٪")
-                                    .font(.caption2.bold()).foregroundStyle(.black)
-                                    .padding(3).background(Color.cyan)
-                            }
-                            .position(x: left + r.midX * width, y: top + (1 - r.midY) * height)
                         if model.adaptiveBodyMarker, let body = detection.matchedPersonBox {
                             let position = VisualBodyAssociation.selectedPoint(
                                 in: body, x: assistance.configuration.pointX,
@@ -303,6 +328,9 @@ struct AIAnalysisSettings: View {
                         Text("يشترط لون العلامة مع جسم مكتشف ومطابقة واضحة بينهما. عند فقد أحدهما يتوقف التتبّع؛ لون العلامة لا يثبت الفريق وحده.")
                             .font(.footnote)
                     }
+                    Toggle("إظهار مربعات خضراء حول اللاعبين المكتشفين", isOn: $model.showPlayerBoxes)
+                    Text("تُظهر المربعات الأجسام المحتملة، وقد تشمل لاعبي فريقك؛ ولا تثبت هوية العدو.")
+                        .font(.footnote)
                     Toggle("إظهار موضع الجسم المختار مع تغير مسافة اللاعب", isOn: $model.adaptiveBodyMarker)
                     Text("في الوضع المدمج تتبع نقطة التصويب الجسم المكتشف وتتكيف مع حجمه. إظهار العلامة خيار مرئي؛ حركة التحكم تحتاج تفعيل المساعدة وL2.")
                         .font(.footnote)
@@ -365,7 +393,8 @@ struct AIAnalysisSettings: View {
                         if let result = model.result {
                             if let error = result.error { Text(error).foregroundStyle(.red) }
                             else {
-                                Text("الأشخاص المحتملون: \(result.detections.count)")
+                                Text("أجسام الأشخاص المكتشفة: \(result.visiblePlayerBoxes.count)")
+                                Text("أهداف التتبّع المؤهلة: \(result.detections.count)")
                                 Text("زمن التحليل: \(Int(result.milliseconds)) ms")
                                 if ProcessInfo.processInfo.systemUptime - result.capturedAt >= 0.8 {
                                     Text("لا توجد نتيجة حديثة؛ الإطارات القديمة مخفية.")
