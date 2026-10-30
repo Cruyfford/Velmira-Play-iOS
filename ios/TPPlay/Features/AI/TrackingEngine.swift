@@ -119,33 +119,60 @@ struct TrackingEngine {
         if c.tracking && !manual && !blockedUntilRelease,
            let sample, now >= sample.capturedAt, now - sample.capturedAt <= clamp(c.staleAfter, 0.1, 0.8) {
             let center = CGPoint(x: 0.5, y: 0.5)
-            // Stable visual identity takes priority over rectangle overlap.
-            // A nearby different player must not inherit the lock.
-            let candidates = sample.boxes.indices.filter { index in
+            // A locked, verified target stays eligible even when it moves
+            // outside the initial near-crosshair acquisition circle.
+            let visible = sample.boxes.indices.filter { index in
                 let box = sample.boxes[index]
                 return !box.isNull && box.width > 0 && box.height > 0 &&
-                    distance(point(box, sample.colorMode, c), center) <= clamp(c.radius, 0.05, 0.5)
+                    box.minX.isFinite && box.maxX.isFinite &&
+                    box.minY.isFinite && box.maxY.isFinite &&
+                    box.minX >= 0 && box.minY >= 0 &&
+                    box.maxX <= 1 && box.maxY <= 1
+            }
+            let acquisition = visible.filter {
+                distance(point(sample.boxes[$0], sample.colorMode, c), center) <=
+                    clamp(c.radius, 0.05, 0.5)
             }
             func identity(_ index: Int) -> UUID? {
                 guard let ids = sample.targetIDs, ids.count == sample.boxes.count else { return nil }
                 return ids[index]
             }
             var selected: Int?
+            let hadLock = locked != nil
             if let prior = locked {
                 if let lockedID {
-                    selected = candidates.first { identity($0) == lockedID }
+                    selected = visible.first { identity($0) == lockedID }
                 } else {
-                    selected = candidates.filter { overlap(prior, sample.boxes[$0]) >= 0.12 }
+                    // Older color-only detection has no stable IDs.
+                    selected = visible.filter { overlap(prior, sample.boxes[$0]) >= 0.12 }
                         .max { overlap(prior, sample.boxes[$0]) < overlap(prior, sample.boxes[$1]) }
                 }
                 if selected == nil && now - lastSeen >= clamp(c.lossDelay, 0.15, 2) {
+                    // Lost identity is not proof of an elimination.
                     locked = nil
                     lockedID = nil
-                    if !c.switchOnLoss { blockedUntilRelease = true }
+                    if c.switchOnLoss {
+                        // Prefer another confirmed player close to the last
+                        // location, not an arbitrary distant screen candidate.
+                        let lastPosition = point(prior, sample.colorMode, c)
+                        let handoffRadius = clamp(c.radius, 0.12, 0.28)
+                        selected = acquisition.filter {
+                            distance(point(sample.boxes[$0], sample.colorMode, c),
+                                     lastPosition) <= handoffRadius
+                        }.min {
+                            distance(point(sample.boxes[$0], sample.colorMode, c), lastPosition) <
+                                distance(point(sample.boxes[$1], sample.colorMode, c), lastPosition)
+                        }
+                        // If no nearby confirmed player exists, require a new
+                        // L2 press instead of jumping across the screen.
+                        if selected == nil { blockedUntilRelease = true }
+                    } else {
+                        blockedUntilRelease = true
+                    }
                 }
             }
-            if locked == nil && !blockedUntilRelease {
-                selected = candidates.min {
+            if !hadLock && !blockedUntilRelease {
+                selected = acquisition.min {
                     distance(point(sample.boxes[$0], sample.colorMode, c), center) <
                         distance(point(sample.boxes[$1], sample.colorMode, c), center)
                 }
