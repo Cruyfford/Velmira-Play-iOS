@@ -257,6 +257,16 @@ struct AIAnalysisOverlay: View {
                             let body = result.visiblePlayerBoxes[index]
                             Rectangle().stroke(Color.green, lineWidth: 2.5)
                                 .frame(width: body.width * width, height: body.height * height)
+                                .overlay(alignment: .topLeading) {
+                                    Text(PlayerVisualCues.proximity(for: body))
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundStyle(Color.white)
+                                        .padding(.horizontal, 5)
+                                        .padding(.vertical, 3)
+                                        .background(Color.black.opacity(0.78), in: Capsule())
+                                        .offset(y: -23)
+                                        .fixedSize()
+                                }
                                 .position(x: left + body.midX * width,
                                           y: top + (1 - body.midY) * height)
                         }
@@ -302,7 +312,7 @@ struct AIAnalysisSettings: View {
                             .font(.footnote)
                     }
                     Toggle("إظهار مربعات خضراء حول اللاعبين المكتشفين", isOn: $model.showPlayerBoxes)
-                    Text("تُظهر المربعات الأجسام المحتملة، وقد تشمل لاعبي فريقك؛ ولا تثبت هوية العدو.")
+                    Text("بجانب كل مربع يظهر قرب نسبي (قريب جدًا / قريب / متوسط / بعيد) حسب ارتفاع الجسم في الصورة، وليس مسافة بالمتر. الأجسام المكتشفة قد تشمل لاعبي فريقك.")
                         .font(.footnote)
                     Toggle("إظهار موضع الجسم المختار مع تغير مسافة اللاعب", isOn: $model.adaptiveBodyMarker)
                     Text("في الوضع المدمج تتبع نقطة التصويب الجسم المكتشف وتتكيف مع حجمه. إظهار العلامة خيار مرئي؛ حركة التحكم تحتاج تفعيل المساعدة وL2.")
