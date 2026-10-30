@@ -219,33 +219,6 @@ final class AIFrameAnalyzer: @unchecked Sendable {
                                        milliseconds: (ProcessInfo.processInfo.systemUptime - start) * 1000,
                                        error: nil, visiblePlayerBoxes: people)
             } catch {
-                            if useHybrid { throw error }
-                            // Color-only mode can still show its unverified markers.
-                        }
-                    }
-                    if useHybrid {
-                        detections = HybridTargetFusion.associate(markers: colorBoxes, people: people)
-                    } else {
-                        detections = colorBoxes.map { marker in
-                            let match = VisualBodyAssociation.bestPerson(for: marker, among: people)
-                            return HumanDetection(id: UUID(), box: marker, confidence: 0,
-                                                  humanSupported: match != nil,
-                                                  matchedPersonBox: match)
-                        }
-                    }
-                } else {
-                    let request = VNDetectHumanRectanglesRequest()
-                    request.upperBodyOnly = false
-                    let handler = VNImageRequestHandler(cvPixelBuffer: frame.buffer, orientation: .up, options: [:])
-                    try handler.perform([request])
-                    detections = (request.results ?? []).filter { $0.confidence >= minimum }.map {
-                        HumanDetection(id: UUID(), box: $0.boundingBox, confidence: $0.confidence,
-                                       humanSupported: true, matchedPersonBox: $0.boundingBox)
-                    }
-                }
-                report = HumanAnalysis(detections: detections, imageSize: size, capturedAt: now,
-                                       milliseconds: (ProcessInfo.processInfo.systemUptime - start) * 1000, error: nil)
-            } catch {
                 report = HumanAnalysis(detections: [], imageSize: size, capturedAt: now, milliseconds: 0,
                                        error: error.localizedDescription)
             }
