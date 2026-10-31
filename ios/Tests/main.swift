@@ -232,3 +232,79 @@ require(PlayerVisualCues.proximity(for: CGRect(x: 0, y: 0.2, width: 0.1, height:
         "Small visible bodies are classified as visually distant")
 print("Fast identity retention, near handoff, proximity checks passed")
 
+
+
+// Continuous-lock regression tests: without L2, full-screen acquisition,
+// lock identity, brief disappearance, manual input and macros.
+var continuous = TrackingEngine()
+var continuousConfig = AssistanceConfiguration()
+continuousConfig.trackingWithoutL2 = true
+continuousConfig.fullScreenAcquisition = true
+continuousConfig.radius = 0.08
+continuousConfig.pointY = 0.5
+continuousConfig.switchOnLoss = true
+continuousConfig.lossDelay = 0.5
+continuousConfig.staleAfter = 0.35
+continuousConfig.quickScope = true
+continuousConfig.silentShot = true
+let lockA = UUID(), lockB = UUID()
+let farBody = CGRect(x: 0.83, y: 0.30, width: 0.07, height: 0.28)
+let movedBody2 = CGRect(x: 0.71, y: 0.30, width: 0.07, height: 0.28)
+let unrelatedBody = CGRect(x: 0.10, y: 0.30, width: 0.07, height: 0.28)
+func continuousStep(_ t: Double, l2: Double = 0, r2: Double = 0, rawX: Double = 0,
+                    boxes: [CGRect], ids: [UUID], capturedAt: Double? = nil) -> AssistanceOutput {
+    continuous.step(now: t, armed: true, l2: l2, r2: r2, rawX: rawX, rawY: 0,
+                    sample: TrackingSample(boxes: boxes, capturedAt: capturedAt ?? t,
+                                           colorMode: false, targetIDs: ids),
+                    config: continuousConfig)
+}
+_ = continuousStep(200.00, boxes: [], ids: [])
+let withoutL2 = continuousStep(200.10, boxes: [farBody], ids: [lockA])
+require(withoutL2.target != nil && withoutL2.x > 0,
+        "Explicit continuous mode acquires full-screen target without pressing L2")
+require(!withoutL2.fire && !withoutL2.switchWeapon,
+        "No-L2 tracking cannot activate L2-only weapon macros")
+let movedWithoutL2 = continuousStep(200.20, boxes: [movedBody2, unrelatedBody],
+                                    ids: [lockA, lockB])
+require(movedWithoutL2.target != nil && movedWithoutL2.target!.x > 0.70,
+        "Keep the same stable identity after movement beyond the acquisition radius")
+let underL2 = continuousStep(200.25, l2: 1, boxes: [movedBody2, unrelatedBody],
+                             ids: [lockA, lockB])
+require(underL2.target != nil && underL2.target!.x > 0.70,
+        "Pressing L2 does not change the selected identity")
+let afterL2 = continuousStep(200.30, boxes: [movedBody2, unrelatedBody],
+                             ids: [lockA, lockB])
+require(afterL2.target != nil && afterL2.target!.x > 0.70,
+        "Releasing L2 preserves continuous lock")
+require(continuousStep(200.34, rawX: 0.9, boxes: [movedBody2], ids: [lockA]).x == 0.9,
+        "Manual right-stick control always wins")
+require(continuousStep(200.38, boxes: [movedBody2, unrelatedBody],
+                       ids: [lockA, lockB]).target!.x > 0.70,
+        "Manual adjustment does not discard the locked identity")
+require(continuousStep(200.42, boxes: [unrelatedBody], ids: [lockB]).target == nil,
+        "Do not switch to an unrelated candidate during brief occlusion")
+require(continuousStep(200.50, boxes: [movedBody2], ids: [lockA]).target != nil,
+        "Reappearing confirmed player is reacquired inside loss grace period")
+require(continuousStep(200.95, boxes: [movedBody2], ids: [lockA],
+                       capturedAt: 200.50).target == nil,
+        "Stale video never steers the camera")
+require(continuousStep(201.10, boxes: [], ids: []).target == nil,
+        "Disappearances do not yield phantom targets")
+require(continuousStep(201.20, boxes: [unrelatedBody], ids: [lockB]).target != nil,
+        "Continuous mode can reacquire a new fresh target without L2 release")
+require(continuousStep(201.30, r2: 1, boxes: [unrelatedBody], ids: [lockB]).switchWeapon == false,
+        "R2 without L2 does not activate silent-shot macro")
+var legacyNoL2 = TrackingEngine()
+var legacyConfig = AssistanceConfiguration()
+legacyConfig.pointY = 0.5
+_ = legacyNoL2.step(now: 300, armed: true, l2: 0, r2: 0, rawX: 0, rawY: 0,
+                    sample: nil, config: legacyConfig)
+require(legacyNoL2.step(now: 300.10, armed: true, l2: 0, r2: 0, rawX: 0, rawY: 0,
+                       sample: TrackingSample(boxes: [farBody], capturedAt: 300.10,
+                                              colorMode: false), config: legacyConfig).target == nil,
+        "Existing users retain traditional L2-only behavior by default")
+let archived = try JSONEncoder().encode(legacyConfig)
+let migrated = try JSONDecoder().decode(AssistanceConfiguration.self, from: archived)
+require(migrated.trackingWithoutL2 == nil && migrated.fullScreenAcquisition == nil,
+        "Optional continuous mode flags preserve decoding of old settings")
+print("Continuous target-lock tests passed")
