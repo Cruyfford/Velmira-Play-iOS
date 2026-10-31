@@ -6,6 +6,9 @@ struct AssistanceConfiguration: Codable, Equatable {
     // Never turn the user's controller assistance on implicitly.
     var trackingWithoutL2: Bool? = nil
     var fullScreenAcquisition: Bool? = nil
+    /// Faster correction with a short lead *inside a currently visible body*.
+    /// Optional so previous users' saved JSON decodes unchanged.
+    var strongLock: Bool? = nil
     var radius = 0.22
     var strength = 1.2
     var maxStick = 0.35
@@ -61,6 +64,11 @@ struct TrackingEngine {
     private var previousTick: TimeInterval?
     private var smoothX = 0.0
     private var smoothY = 0.0
+    // Motion is estimated only when the analyzer gives a genuinely NEW frame.
+    // No prediction continues without a visible confirmed detection.
+    private var lastObservedPoint: CGPoint?
+    private var lastObservedAt: TimeInterval?
+    private var lastObservedID: UUID?
     private var mustRelease = true
 
     mutating func reset() { self = TrackingEngine() }
@@ -101,6 +109,7 @@ struct TrackingEngine {
             if !continuous {
                 locked = nil; lockedID = nil; blockedUntilRelease = false
                 smoothX = 0; smoothY = 0
+                lastObservedPoint = nil; lastObservedAt = nil; lastObservedID = nil
                 return out
             }
         } else {
@@ -201,17 +210,51 @@ struct TrackingEngine {
                 let box = sample.boxes[selected]
                 locked = box; lockedID = identity(selected); lastSeen = sample.capturedAt
                 let target = point(box, sample.colorMode, c)
-                out.target = target
-                let dx = target.x - 0.5, dy = target.y - 0.5
+                let currentID = identity(selected)
+                var commandPoint = target
+                if c.strongLock == true && !sample.colorMode,
+                   currentID != nil, currentID == lastObservedID,
+                   let old = lastObservedPoint, let oldTime = lastObservedAt,
+                   sample.capturedAt > oldTime {
+                    let sampleDelta = sample.capturedAt - oldTime
+                    if sampleDelta >= 0.03 && sampleDelta <= 0.35 {
+                        // Bounded lead reduces visual-frame lag for a moving
+                        // visible player. Never aim beyond the visible body.
+                        let lead = min(0.045, sampleDelta * 0.5)
+                        let vx = clamp((target.x - old.x) / sampleDelta, -1.5, 1.5)
+                        let vy = clamp((target.y - old.y) / sampleDelta, -1.5, 1.5)
+                        let left = box.minX + box.width * 0.10
+                        let right = box.maxX - box.width * 0.10
+                        let top = 1 - box.maxY + box.height * 0.10
+                        let bottom = 1 - box.minY - box.height * 0.10
+                        commandPoint = CGPoint(
+                            x: clamp(target.x + vx * lead, left, right),
+                            y: clamp(target.y + vy * lead, top, bottom))
+                    }
+                }
+                if lastObservedID != currentID ||
+                   lastObservedAt == nil ||
+                   sample.capturedAt > lastObservedAt! {
+                    lastObservedPoint = target
+                    lastObservedAt = sample.capturedAt
+                    lastObservedID = currentID
+                }
+                out.target = commandPoint
+                let dx = commandPoint.x - 0.5, dy = commandPoint.y - 0.5
                 let cap = clamp(c.maxStick, 0.02, 0.8)
-                let desiredX = abs(dx) < c.deadZone ? 0 : clamp(dx * clamp(c.strength, 0.1, 5), -cap, cap)
-                let desiredY = abs(dy) < c.deadZone ? 0 : clamp(dy * clamp(c.strength, 0.1, 5), -cap, cap) * (c.invertY ? -1 : 1)
+                let gainX = c.strongLock == true && abs(dx) < 0.045 ? 1.7 : clamp(c.strength, 0.1, 5)
+                let gainY = c.strongLock == true && abs(dy) < 0.045 ? 1.7 : clamp(c.strength, 0.1, 5)
+                let desiredX = abs(dx) < c.deadZone ? 0 : clamp(dx * gainX, -cap, cap)
+                let desiredY = abs(dy) < c.deadZone ? 0 : clamp(dy * gainY, -cap, cap) * (c.invertY ? -1 : 1)
                 let dt = clamp(now - (previousTick ?? now - 1 / 60), 0, 0.1)
                 let alpha = 1 - exp(-dt / clamp(c.response, 0.02, 0.5))
                 smoothX += (desiredX - smoothX) * alpha
                 smoothY += (desiredY - smoothY) * alpha
                 out.x += smoothX; out.y += smoothY
-            } else { smoothX = 0; smoothY = 0 }
+            } else {
+                smoothX = 0; smoothY = 0
+                lastObservedPoint = nil; lastObservedAt = nil; lastObservedID = nil
+            }
         } else {
             smoothX = 0; smoothY = 0
             // Manual stick input always wins, but a short manual adjustment
