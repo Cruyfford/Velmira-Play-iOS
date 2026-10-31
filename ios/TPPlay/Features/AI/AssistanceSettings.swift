@@ -76,6 +76,30 @@ struct AssistanceSettings: View {
                         model.configuration.pointY = 0.5
                         savedNotice = "YOLOv8n يكتشف فئة Enemy تلقائياً. احفظ الإعدادات وفعّل المساعدة."
                     }
+                    Button("قفل قوي وسريع — YOLOv8n") {
+                        model.emergencyStop(reason: "أعد تفعيل المساعدة بعد تطبيق القفل القوي")
+                        vision.prepareHybridTracking()
+                        vision.threshold = 0.30
+                        vision.rate = 20 // Target rate, not a guaranteed measured FPS.
+                        model.configuration.tracking = true
+                        model.configuration.strongLock = true
+                        model.configuration.trackingWithoutL2 = true
+                        model.configuration.fullScreenAcquisition = true
+                        model.configuration.switchOnLoss = true
+                        model.configuration.strength = 3.2
+                        model.configuration.maxStick = 0.72
+                        model.configuration.response = 0.025
+                        model.configuration.staleAfter = 0.28
+                        model.configuration.lossDelay = 0.35
+                        model.configuration.manualOverride = 0.55
+                        model.configuration.radius = 0.42
+                        model.configuration.pointX = 0.5
+                        model.configuration.pointY = 0.22
+                        model.configuration.quickScope = false
+                        model.configuration.silentShot = false
+                        savedNotice = "تم تفعيل إعداد القفل القوي. احفظ الإعدادات وفعّل المساعدة يدوياً. الأداء يتوقف على كشف YOLO وتأخير الاتصال."
+                    }
+                    .buttonStyle(.borderedProminent)
                     Button("قفل مستمر على الهدف — مع L2 وبدونه") {
                         model.emergencyStop(reason: "فعّل المساعدة يدوياً بعد ضبط القفل المستمر")
                         vision.prepareHybridTracking()
@@ -115,6 +139,11 @@ struct AssistanceSettings: View {
                            isOn: Binding(
                                get: { model.configuration.trackingWithoutL2 ?? false },
                                set: { model.configuration.trackingWithoutL2 = $0 }
+                           ))
+                    Toggle("قفل قوي: استجابة أسرع وتقدّم محدود لحركة الهدف",
+                           isOn: Binding(
+                               get: { model.configuration.strongLock ?? false },
+                               set: { model.configuration.strongLock = $0 }
                            ))
                     Toggle("البحث عن الأهداف في كامل الشاشة",
                            isOn: Binding(
