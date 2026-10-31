@@ -1,0 +1,28 @@
+name: Build experimental Sony-host overlay (no Sony binaries)
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'sony-host/**'
+      - '.github/workflows/sony-host-overlay.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  overlay:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile unsigned iOS overlay dylib
+        run: |
+          mkdir -p build/sony-host
+          xcrun --sdk iphoneos clang -arch arm64 -target arm64-apple-ios16.0 \
+            -fobjc-arc -fmodules -dynamiclib -framework Foundation -framework UIKit \
+            -Wl,-install_name,@rpath/VelmiraSonyOverlay.dylib \
+            sony-host/VelmiraSonyOverlay.m -o build/sony-host/VelmiraSonyOverlay.dylib
+          file build/sony-host/VelmiraSonyOverlay.dylib
+      - name: Upload standalone overlay build
+        uses: actions/upload-artifact@v4
+        with:
+          name: VelmiraSonyOverlay-UNSIGNED
+          path: build/sony-host/VelmiraSonyOverlay.dylib
