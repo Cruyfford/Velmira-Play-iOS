@@ -237,11 +237,8 @@ struct RemotePlayView: View {
                 .accessibilityLabel("الخروج من البث والعودة إلى الأجهزة")
 
                 Menu {
-                    Button("معايرة اللون", systemImage: "eyedropper") {
-                        openCalibrationCapture()
-                    }
-                    Button("اسم خصم", systemImage: "text.viewfinder") {
-                        openOpponentCapture()
+                    Button("تشغيل YOLO والتصنيف التلقائي", systemImage: "viewfinder") {
+                        aiAnalysis.prepareHybridTracking()
                     }
                     Button(showMetrics ? "إخفاء الأداء" : "عرض الأداء", systemImage: "chart.bar.xaxis") {
                         showMetrics.toggle()
