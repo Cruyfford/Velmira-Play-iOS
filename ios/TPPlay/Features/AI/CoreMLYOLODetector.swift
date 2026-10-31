@@ -34,7 +34,7 @@ final class CoreMLYOLODetector: @unchecked Sendable {
                 // expensive compilation on every subsequent launch.
                 let support = try fm.url(for: .applicationSupportDirectory,
                                          in: .userDomainMask, appropriateFor: nil, create: true)
-                let cached = support.appendingPathComponent("VelmiraMW3-yolov8n-20261031.mlmodelc")
+                let cached = support.appendingPathComponent("VelmiraMW3-yolov8n-640-v2.mlmodelc")
                 if fm.fileExists(atPath: cached.path) {
                     compiled = cached
                 } else {
@@ -57,12 +57,12 @@ final class CoreMLYOLODetector: @unchecked Sendable {
                 throw NSError(domain: "VelmiraYOLO", code: 2,
                               userInfo: [NSLocalizedDescriptionKey: "YOLO لا يحتوي مدخل صورة صالحاً."])
             }
-            guard constraint.pixelsWide == 352 && constraint.pixelsHigh == 352,
+            guard constraint.pixelsWide == 640 && constraint.pixelsHigh == 640,
                   let output = loaded.modelDescription.outputDescriptionsByName["var_910"],
                   output.type == .multiArray else {
                 throw NSError(domain: "VelmiraYOLO", code: 3,
                               userInfo: [NSLocalizedDescriptionKey:
-                                "هذا ليس نموذج MW3 YOLOv8n المتدرّب (352px / var_910)."])
+                                "هذا ليس نموذج MW3 YOLOv8n المتدرّب (640px / var_910)."])
             }
             model = loaded
             imageInput = input.key
@@ -72,8 +72,8 @@ final class CoreMLYOLODetector: @unchecked Sendable {
         } catch {
             model = nil
             imageInput = "image"
-            imageWidth = 352
-            imageHeight = 352
+            imageWidth = 640
+            imageHeight = 640
             loadFailure = "تعذر تشغيل YOLOv8 المدرب: \(error.localizedDescription)"
         }
     }
@@ -127,8 +127,8 @@ final class CoreMLYOLODetector: @unchecked Sendable {
                                contentHeight: Double(renderedHeight))
     }
 
-    /// Model export: float32 [1,5,2541] where rows 0..3 are xywh
-    /// *in pixels of the 352px letterboxed model input*, row 4 is Enemy score.
+    /// Model export: float32 [1,5,8400] where rows 0..3 are xywh
+    /// *in pixels of the 640px letterboxed model input*, row 4 is Enemy score.
     /// Shape and strides are checked; NMS is not part of the trained model.
     static func decode(_ tensor: MLMultiArray, scoreThreshold: Float,
                        inputWidth: Double, inputHeight: Double,
@@ -136,12 +136,12 @@ final class CoreMLYOLODetector: @unchecked Sendable {
                        contentWidth: Double, contentHeight: Double) throws -> [YOLOPersonCandidate] {
         let shape = tensor.shape.map(\.intValue)
         guard shape.count == 3, shape[0] == 1, shape[1] == 5,
-              shape[2] == 2541, tensor.dataType == .float32,
+              shape[2] == 8400, tensor.dataType == .float32,
               inputWidth > 0, inputHeight > 0,
               contentWidth > 0, contentHeight > 0 else {
             throw NSError(domain: "VelmiraYOLO", code: 7,
                           userInfo: [NSLocalizedDescriptionKey:
-                            "أبعاد Tensor الخاصة بنموذج YOLOv8 لا تطابق [1,5,2541]."])
+                            "أبعاد Tensor الخاصة بنموذج YOLOv8 لا تطابق [1,5,8400]."])
         }
         let strideChannel = tensor.strides[1].intValue
         let stridePrediction = tensor.strides[2].intValue
