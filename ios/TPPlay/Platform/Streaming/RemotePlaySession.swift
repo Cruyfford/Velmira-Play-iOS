@@ -662,7 +662,7 @@ final class RemotePlaySession: ObservableObject {
         let ai = AIAnalysisState.shared
         let assistance = AssistanceState.shared
         let sample = ai.enabled ? ai.result.map {
-            $0.trackingSample(colorMode: ai.colorMode, hybridMode: ai.hybridMode)
+            $0.trackingSample(colorMode: true, hybridMode: true)  // YOLOv8 always supplies verified body rectangles
         } : nil
         let result = assistanceEngine.step(
             now: ProcessInfo.processInfo.systemUptime, armed: assistance.armed,
