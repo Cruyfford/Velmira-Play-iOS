@@ -1,0 +1,36 @@
+name: Build Remote Play diagnostic overlay
+on:
+  push:
+    branches: [codex/remoteplay-overlay-diagnostic]
+    paths:
+      - 'diagnostics/remoteplay/**'
+      - '.github/workflows/remoteplay-diagnostic.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build-overlay:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile arm64 iOS diagnostic
+        shell: bash
+        run: |
+          mkdir -p diagnostic-output
+          xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=16.0 \
+            -fobjc-arc -fblocks -Wall -Wextra -Werror -O2 -dynamiclib \
+            -framework UIKit -framework Foundation -framework QuartzCore \
+            -install_name @rpath/VelmiraDiagnostic.dylib \
+            diagnostics/remoteplay/DiagnosticOverlay.m \
+            -o diagnostic-output/VelmiraDiagnostic.dylib
+          codesign --force --sign - diagnostic-output/VelmiraDiagnostic.dylib
+          codesign --verify --strict diagnostic-output/VelmiraDiagnostic.dylib
+          xcrun lipo -info diagnostic-output/VelmiraDiagnostic.dylib
+          xcrun otool -L diagnostic-output/VelmiraDiagnostic.dylib
+          shasum -a 256 diagnostic-output/VelmiraDiagnostic.dylib
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RemotePlay-Diagnostic-Overlay
+          path: diagnostic-output/VelmiraDiagnostic.dylib
+          if-no-files-found: error
