@@ -65,7 +65,7 @@ struct AssistanceSettings: View {
                         Text("سبب الإيقاف: \(reason)")
                             .font(.footnote).foregroundStyle(.orange)
                     }
-                    Text("YOLOv8n المدرب يعمل محلياً دون اختيار الأسماء أو الألوان. وقد يخطئ في تصنيف اللاعبين، ولم يُختبر على PS5 بعد.").font(.footnote)
+                    Text("YOLOv8n الجديد بدقة 640 يعمل محلياً دون اختيار الأسماء أو الألوان. وقد يخطئ في تصنيف اللاعبين، ولم يُختبر على PS5 بعد.").font(.footnote)
                 }
                 VelmiraSection("التتبّع") {
                     Button("تشغيل نموذج MW3 YOLOv8n المدرّب") {
@@ -167,7 +167,7 @@ struct AssistanceSettings: View {
                 VelmiraSection("نموذج كشف MW3") {
                     Text("تستخدم النسخة المدرّبة YOLOv8n (فئة Enemy واحدة) من دون إدخال أسماء اللاعبين أو ألوانهم.")
                         .font(.footnote)
-                    Text("تقييم الاختبار: mAP@50 نحو 53.3٪ على 21 صورة فقط. قد يفقد اللاعب البعيد أو يخلط الحلفاء بالأعداء؛ هذه ليست دقة مضمونة داخل اللعبة.")
+                    Text("تقييم الاختبار الجديد بدقة 640: mAP@50 نحو 79.5٪ على 21 صورة فقط. قد يفقد اللاعب البعيد أو يخلط الحلفاء بالأعداء؛ هذه ليست دقة مضمونة داخل اللعبة.")
                         .font(.footnote).foregroundStyle(.orange)
                 }
                 VelmiraSection("موضع التصويب داخل الجسم") {
