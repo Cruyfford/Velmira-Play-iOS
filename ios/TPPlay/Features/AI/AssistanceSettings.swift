@@ -79,8 +79,10 @@ struct AssistanceSettings: View {
                     Button("قفل مستمر على الهدف — مع L2 وبدونه") {
                         model.emergencyStop(reason: "فعّل المساعدة يدوياً بعد ضبط القفل المستمر")
                         vision.prepareHybridTracking()
-                        vision.rate = 8
+                        vision.rate = 20
                         model.configuration.tracking = true
+                        model.configuration.strength = 2.4
+                        model.configuration.maxStick = 0.60
                         model.configuration.trackingWithoutL2 = true
                         model.configuration.fullScreenAcquisition = true
                         model.configuration.switchOnLoss = true
