@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct ConsoleLibraryView: View {
     @StateObject private var discovery = ConsoleDiscoveryStore()
@@ -59,6 +60,19 @@ struct ConsoleLibraryView: View {
                                 .frame(maxWidth: .infinity, minHeight: 48)
                         }
                         .buttonStyle(AcidButtonStyle())
+                        Button(action: launchSonyRemotePlay) {
+                            VStack(alignment: .leading, spacing: 5) {
+                                Label("فتح Sony PS Remote Play", systemImage: "arrow.up.right.square")
+                                    .font(.headline)
+                                Text("يفتح تطبيق Sony المنفصل. أدوات Velmira لا تعمل فوق تطبيق آخر.")
+                                    .font(.caption)
+                                    .foregroundStyle(TPPlayTheme.secondaryText)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, 8)
+                        }
+                        .buttonStyle(AcidButtonStyle())
+                        .accessibilityLabel("فتح تطبيق سوني ريموت بلاي الخارجي")
                         if !registeredConsoles.consoles.isEmpty { consoleSection }
                         else { emptyConsoleState }
                         if let storageError = registeredConsoles.storageError {
@@ -173,6 +187,23 @@ struct ConsoleLibraryView: View {
         }
         .onChange(of: registeredConsoles.consoles, initial: true) { _, consoles in
             discovery.updateRegisteredConsoles(consoles)
+        }
+    }
+
+    /// Opens the user's separate Sony app. This does not embed the Sony stream or
+    /// transfer Velmira overlays/controls across the iOS app sandbox boundary.
+    private func launchSonyRemotePlay() {
+        // Verified in the user's Sony PS Remote Play 9.5.0 Info.plist.
+        guard let url = URL(string: "com.playstation.remoteplay.sceappcall://") else {
+            wakeError = "تعذر إنشاء رابط Sony Remote Play."
+            return
+        }
+
+        UIApplication.shared.open(url, options: [:]) { opened in
+            guard !opened else { return }
+            DispatchQueue.main.async {
+                wakeError = "تعذر فتح Sony Remote Play. تأكد من تثبيت التطبيق على الآيفون. يمكن استخدام بث Velmira الداخلي بدلاً منه."
+            }
         }
     }
 
