@@ -308,3 +308,61 @@ let migrated = try JSONDecoder().decode(AssistanceConfiguration.self, from: arch
 require(migrated.trackingWithoutL2 == nil && migrated.fullScreenAcquisition == nil,
         "Optional continuous mode flags preserve decoding of old settings")
 print("Continuous target-lock tests passed")
+
+
+// Strong-lock regression: bounded target lead based only on new, visible,
+// confirmed samples. No movement on missing/stale frames or manual override.
+var strongEngine = TrackingEngine()
+var strongConfig = AssistanceConfiguration()
+strongConfig.trackingWithoutL2 = true
+strongConfig.strongLock = true
+strongConfig.fullScreenAcquisition = true
+strongConfig.pointX = 0.5
+strongConfig.pointY = 0.5
+strongConfig.strength = 3.2
+strongConfig.maxStick = 0.72
+strongConfig.response = 0.025
+strongConfig.staleAfter = 0.28
+let strongID = UUID()
+func strongStep(_ time: Double, _ rect: CGRect?, at frameTime: Double? = nil,
+                rawX: Double = 0, l2: Double = 0) -> AssistanceOutput {
+    strongEngine.step(now: time, armed: true, l2: l2, r2: 0,
+                      rawX: rawX, rawY: 0,
+                      sample: TrackingSample(boxes: rect.map { [$0] } ?? [],
+                                             capturedAt: frameTime ?? time,
+                                             colorMode: false,
+                                             targetIDs: rect.map { _ in [strongID] } ?? []),
+                      config: strongConfig)
+}
+let strongBoxA = CGRect(x: 0.54, y: 0.25, width: 0.18, height: 0.4)
+let strongBoxB = CGRect(x: 0.60, y: 0.25, width: 0.18, height: 0.4)
+_ = strongStep(400, nil)  // Trigger release required for arming.
+let startStrong = strongStep(400.1, strongBoxA)
+require(startStrong.target != nil && startStrong.x > 0,
+        "Strong mode acquires verified target without L2")
+let movingStrong = strongStep(400.2, strongBoxB)
+require(movingStrong.target != nil,
+        "Strong mode retains identity on a fresh moving target")
+require(movingStrong.target!.x > strongBoxB.midX,
+        "Strong lock applies short motion lead towards visible movement")
+require(movingStrong.target!.x <= strongBoxB.maxX,
+        "Strong lock lead must never exceed the currently visible target box")
+let sameFrameStrong = strongStep(400.22, strongBoxB, at: 400.2)
+require(sameFrameStrong.target != nil &&
+        abs(sameFrameStrong.target!.x - strongBoxB.midX) < 0.0001,
+        "Repeated same frame must not extrapolate as if it were new evidence")
+let manualStrong = strongStep(400.25, strongBoxB, rawX: 0.95)
+require(manualStrong.target == nil && manualStrong.x == 0.95,
+        "Manual control must override stronger lock")
+let disappearedStrong = strongStep(400.28, nil)
+require(disappearedStrong.target == nil && disappearedStrong.x == 0,
+        "Never steer toward a missing target in strong mode")
+let oldStrong = strongStep(401.0, strongBoxB, at: 400.2)
+require(oldStrong.target == nil && oldStrong.x == 0,
+        "Never use outdated stream observations in strong mode")
+var oldSettings = AssistanceConfiguration()
+let oldSettingsData = try JSONEncoder().encode(oldSettings)
+oldSettings = try JSONDecoder().decode(AssistanceConfiguration.self, from: oldSettingsData)
+require(oldSettings.strongLock == nil,
+        "Older saved settings decode safely without enabling strong lock")
+print("Strong verified target-lock tests passed")
