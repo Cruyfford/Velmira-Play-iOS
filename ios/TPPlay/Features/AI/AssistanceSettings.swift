@@ -58,8 +58,8 @@ struct AssistanceSettings: View {
             ScrollView {
                 VStack(spacing: 16) {
                 VelmiraSection("التحكم الفعلي — تجريبي") {
-                    Toggle("تفعيل المساعدة عند L2", isOn: $model.armed)
-                    Text("بعد التفعيل اترك L2 وR2 أولًا، ثم اضغط L2. حرّك العصا بقوة لاستعادة أولوية التحكم اليدوي.")
+                    Toggle("تفعيل مساعدة التصويب", isOn: $model.armed)
+                    Text("بعد التفعيل اترك L2 وR2 أولًا. في وضع القفل المستمر يعمل الكشف مع L2 وبدونه. حرّك العصا بقوة لاستعادة أولوية التحكم اليدوي.")
                     Button("إيقاف جميع المساعدات", role: .destructive) { model.emergencyStop() }
                     Text(model.status)
                     if !model.armed, let reason = model.lastStopReason {
@@ -77,6 +77,21 @@ struct AssistanceSettings: View {
                         model.configuration.pointY = 0.5
                         savedNotice = "اختر لون علامة الخصم بالمعايرة، ثم احفظ الإعدادات وفعّل المساعدة عند L2."
                     }
+                    Button("قفل مستمر على الهدف — مع L2 وبدونه") {
+                        model.emergencyStop(reason: "فعّل المساعدة يدوياً بعد ضبط القفل المستمر")
+                        vision.prepareHybridTracking()
+                        vision.rate = 8
+                        model.configuration.tracking = true
+                        model.configuration.trackingWithoutL2 = true
+                        model.configuration.fullScreenAcquisition = true
+                        model.configuration.switchOnLoss = true
+                        model.configuration.lossDelay = 0.5
+                        model.configuration.staleAfter = 0.35
+                        model.configuration.response = 0.04
+                        model.configuration.radius = 0.35
+                        savedNotice = "تم ضبط القفل المستمر. احفظ الإعدادات، ثم فعّل المساعدة. الكشف لا يضمن تتبع لاعب خارج الشاشة."
+                    }
+                    .buttonStyle(.borderedProminent)
                     Button("وضع التتبّع السريع والانتقال للهدف القريب") {
                         model.emergencyStop(reason: "أعد تفعيل المساعدة يدويًا بعد تغيير إعدادات التتبّع")
                         vision.prepareHybridTracking()
@@ -97,6 +112,18 @@ struct AssistanceSettings: View {
                         Text("في الوضع المدمج يتبع التصويب موضع الجسم المختار؛ الإزاحة من الاسم تخص وضع اللون وحده.").font(.footnote)
                     }
                     Toggle("تحريك التصويب نحو الهدف", isOn: $model.configuration.tracking)
+                    Toggle("الاستمرار في قفل الهدف بدون L2",
+                           isOn: Binding(
+                               get: { model.configuration.trackingWithoutL2 ?? false },
+                               set: { model.configuration.trackingWithoutL2 = $0 }
+                           ))
+                    Toggle("البحث عن الأهداف في كامل الشاشة",
+                           isOn: Binding(
+                               get: { model.configuration.fullScreenAcquisition ?? false },
+                               set: { model.configuration.fullScreenAcquisition = $0 }
+                           ))
+                    Text("الاستمرار دون L2 لا يُفعَّل إلا باختيارك. لا يتحرك التصويب على بيانات قديمة، ولا يمكن الاحتفاظ بهدف غير مرئي.")
+                        .font(.footnote)
                     if !vision.enabled {
                         Button("تشغيل تحليل الصورة") { vision.enabled = true }
                     }
@@ -107,7 +134,7 @@ struct AssistanceSettings: View {
                     Toggle("عكس المحور الرأسي", isOn: $model.configuration.invertY)
                     Toggle("الانتقال لهدف آخر عند اختفاء الحالي", isOn: $model.configuration.switchOnLoss)
                     valueSlider("مهلة فقد الهدف بالثواني", value: $model.configuration.lossDelay, range: 0.15...2)
-                    Text("بدون الانتقال التلقائي: اترك L2 واضغطه مجددًا لاختيار هدف جديد. تُوقف الحركة عند تقادم الصورة؛ لا يستمر التصويب نحو موقع قديم.").font(.footnote)
+                    Text("في وضع L2 التقليدي، قد يلزم ترك L2 عند فقدان الهدف. أما القفل المستمر فيسمح باكتساب هدف مؤكد جديد بعد مهلة الفقد، دون تحريك التصويب على صورة قديمة.").font(.footnote)
                 }
                 VelmiraSection("لون العلامة فوق الرأس") {
                     Toggle("استخدام تتبّع اللون", isOn: $vision.colorMode)
