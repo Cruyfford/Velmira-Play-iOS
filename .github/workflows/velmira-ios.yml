@@ -27,6 +27,12 @@ jobs:
         run: |
           swiftc ios/TPPlay/Features/AI/TrackingEngine.swift ios/TPPlay/Features/AI/HybridTracking.swift ios/TPPlay/Features/AI/ColorTargetDetector.swift ios/Tests/main.swift -o /tmp/velmira-checks
           /tmp/velmira-checks
+      - name: Validate MW3 YOLOv8 Core ML output decoder
+        run: |
+          swiftc -framework CoreML -framework CoreVideo -framework CoreImage \
+            ios/TPPlay/Features/AI/CoreMLYOLODetector.swift \
+            ios/Tests/YOLOv8/main.swift -o /tmp/velmira-yolov8-checks
+          /tmp/velmira-yolov8-checks
       - name: Install build dependencies
         run: brew install cmake ninja protobuf pkg-config
       - name: Build native iPhone application
