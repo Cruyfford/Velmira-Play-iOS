@@ -65,21 +65,21 @@ struct AssistanceSettings: View {
                         Text("سبب الإيقاف: \(reason)")
                             .font(.footnote).foregroundStyle(.orange)
                     }
-                    Text("YOLO وتجميع العلامات يعملان محلياً. تصنيف الخصوم من لون HUD تقديري، ولم يُختبر على PS5 بعد.").font(.footnote)
+                    Text("YOLOv8n المدرب يعمل محلياً دون اختيار الأسماء أو الألوان. وقد يخطئ في تصنيف اللاعبين، ولم يُختبر على PS5 بعد.").font(.footnote)
                 }
                 VelmiraSection("التتبّع") {
-                    Button("بدء YOLO والتصنيف التلقائي") {
-                        model.emergencyStop(reason: "اختر لون الخصم ثم فعّل المساعدة")
+                    Button("تشغيل نموذج MW3 YOLOv8n المدرّب") {
+                        model.emergencyStop(reason: "فعّل المساعدة بعد ضبط نموذج YOLOv8n")
                         vision.prepareHybridTracking()
                         model.configuration.tracking = true
                         model.configuration.pointX = 0.5
                         model.configuration.pointY = 0.5
-                        savedNotice = "كشف اللون واللاعب تلقائي. احفظ الإعدادات ثم فعّل المساعدة."
+                        savedNotice = "YOLOv8n يكتشف فئة Enemy تلقائياً. احفظ الإعدادات وفعّل المساعدة."
                     }
                     Button("قفل مستمر على الهدف — مع L2 وبدونه") {
                         model.emergencyStop(reason: "فعّل المساعدة يدوياً بعد ضبط القفل المستمر")
                         vision.prepareHybridTracking()
-                        vision.rate = 20
+                        vision.rate = 12
                         model.configuration.tracking = true
                         model.configuration.strength = 2.4
                         model.configuration.maxStick = 0.60
@@ -106,12 +106,10 @@ struct AssistanceSettings: View {
                         savedNotice = "تم ضبط الاستجابة السريعة مؤقتًا. اضغط حفظ الإعدادات وفعّل المساعدة يدويًا."
                     }
                     .buttonStyle(.borderedProminent)
-                    Text("يحافظ على هوية الهدف المؤكد حتى لو تحرك خارج نطاق الالتقاط الأولي، ويتحول إلى أقرب هدف مؤكّد من موقعه السابق عند فقده. اختفاء الهدف لا يثبت موته؛ لا يتحرك التصويب إلى هدف غير مرئي. تحليل 12 مرة/ثانية حد أقصى مطلوب وليس أداءً مضمونًا.")
+                    Text("يحافظ على هوية الهدف المؤكد حتى لو تحرك خارج نطاق الالتقاط الأولي، ويتحول إلى أقرب هدف مؤكّد من موقعه السابق عند فقده. اختفاء الهدف لا يثبت موته؛ لا يتحرك التصويب إلى هدف غير مرئي. تحليل 12 مرة/ثانية معدل مطلوب وليس أداءً مضمونًا.")
                         .font(.footnote)
-                    if vision.colorMode {
-                        Toggle("اشتراط جسم مكتشف مع لون الخصم", isOn: $vision.hybridMode)
-                        Text("YOLO يحدد الجسم ويحلّل موقع علامة HUD تلقائياً.").font(.footnote)
-                    }
+                    Text("لا يشترط البرنامج ظهور علامة HUD الملونة؛ يعتمد على فئة Enemy التي تعلمها YOLOv8n.")
+                        .font(.footnote)
                     Toggle("تحريك التصويب نحو الهدف", isOn: $model.configuration.tracking)
                     Toggle("الاستمرار في قفل الهدف بدون L2",
                            isOn: Binding(
@@ -137,10 +135,10 @@ struct AssistanceSettings: View {
                     valueSlider("مهلة فقد الهدف بالثواني", value: $model.configuration.lossDelay, range: 0.15...2)
                     Text("في وضع L2 التقليدي، قد يلزم ترك L2 عند فقدان الهدف. أما القفل المستمر فيسمح باكتساب هدف مؤكد جديد بعد مهلة الفقد، دون تحريك التصويب على صورة قديمة.").font(.footnote)
                 }
-                VelmiraSection("تصنيف الخصوم تلقائياً") {
-                    Text("YOLO يكشف أجسام اللاعبين، ويبحث عن علامات HUD الدافئة ويربطها بالجسم تلقائياً. لا يلزم إدخال أسماء أو ألوان.")
+                VelmiraSection("نموذج كشف MW3") {
+                    Text("تستخدم النسخة المدرّبة YOLOv8n (فئة Enemy واحدة) من دون إدخال أسماء اللاعبين أو ألوانهم.")
                         .font(.footnote)
-                    Text("لون العلامة مؤشر فقط؛ قد تختلط مؤثرات اللعبة أو تختلف ألوان الفرق، ولن يحرك البرنامج العصا إذا لم يؤكد الهدف.")
+                    Text("تقييم الاختبار: mAP@50 نحو 53.3٪ على 21 صورة فقط. قد يفقد اللاعب البعيد أو يخلط الحلفاء بالأعداء؛ هذه ليست دقة مضمونة داخل اللعبة.")
                         .font(.footnote).foregroundStyle(.orange)
                 }
                 VelmiraSection("موضع التصويب داخل الجسم") {
