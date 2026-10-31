@@ -20,7 +20,7 @@ jobs:
           mkdir -p diagnostic-output
           xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=16.0 \
             -fobjc-arc -fblocks -Wall -Wextra -Werror -O2 -dynamiclib \
-            -framework UIKit -framework Foundation -framework QuartzCore \
+            -framework UIKit -framework Foundation -framework QuartzCore -framework CoreGraphics \
             -install_name @rpath/VelmiraDiagnostic.dylib \
             diagnostics/remoteplay/DiagnosticOverlay.m \
             -o diagnostic-output/VelmiraDiagnostic.dylib
