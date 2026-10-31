@@ -1,5 +1,4 @@
 import SwiftUI
-import Vision
 import CoreVideo
 import ImageIO
 import PhotosUI
@@ -83,12 +82,12 @@ final class AIAnalysisState: ObservableObject {
         hybridMode = true
         precisionMode = true
         adaptiveBodyMarker = true
-        rate = 8
+        rate = 12
         enabled = true
     }
 
     func accept(_ value: HumanAnalysis) {
-        let hybrid = colorMode && hybridMode
+        let hybrid = true
         guard precisionMode || hybrid else { result = value; return }
         if value.error != nil {
             persistence.reset()
@@ -152,17 +151,12 @@ final class AIFrameAnalyzer: @unchecked Sendable {
     func invalidate() { lock.lock(); generation &+= 1; lock.unlock() }
     func setPaused(_ value: Bool) {
         lock.lock(); paused = value; generation &+= 1; lock.unlock()
-        // Keep the independent roster OCR aligned with video foreground state.
-        AutoRosterScanner.shared.setPaused(value)
     }
     private func current(_ token: UInt64) -> Bool {
         lock.lock(); defer { lock.unlock() }
         return enabled && !paused && generation == token
     }
     func submit(_ pixelBuffer: CVPixelBuffer) {
-        // Read names without requiring the person/color overlay to be enabled.
-        // The roster reader has its own capped rate and pause policy.
-        AutoRosterScanner.shared.submit(pixelBuffer)
         let now = ProcessInfo.processInfo.systemUptime
         let thermal = ProcessInfo.processInfo.thermalState
         lock.lock()
@@ -170,10 +164,6 @@ final class AIFrameAnalyzer: @unchecked Sendable {
         guard enabled && !paused && !busy && now - previousTime >= 1 / effectiveRate else { lock.unlock(); return }
         busy = true; previousTime = now
         let token = generation; let minimum = threshold
-        let useColor = colorMode
-        let useHybrid = hybridMode
-        let showAdaptiveMarker = adaptiveBodyMarker
-        let colorConfiguration = color
         lock.unlock()
         let frame = RetainedVideoFrame(pixelBuffer)
         queue.async { [self, frame] in
@@ -183,38 +173,17 @@ final class AIFrameAnalyzer: @unchecked Sendable {
             let size = CGSize(width: CVPixelBufferGetWidth(frame.buffer), height: CVPixelBufferGetHeight(frame.buffer))
             let report: HumanAnalysis
             do {
-                // Analyze visible people independently of colored names or UI text.
-                let personRequest = VNDetectHumanRectanglesRequest()
-                personRequest.upperBodyOnly = false
-                try VNImageRequestHandler(cvPixelBuffer: frame.buffer, orientation: .up, options: [:])
-                    .perform([personRequest])
-                let peopleResults = (personRequest.results ?? []).filter {
-                    $0.confidence >= minimum &&
-                    $0.boundingBox.width >= 0.015 && $0.boundingBox.height >= 0.055 &&
-                    $0.boundingBox.minX >= 0 && $0.boundingBox.minY >= 0 &&
-                    $0.boundingBox.maxX <= 1 && $0.boundingBox.maxY <= 1
-                }
-                let people = Array(peopleResults.prefix(24)).map(\.boundingBox)
-                let detections: [HumanDetection]
-                if useColor {
-                    let colorBoxes = try ColorTargetDetector.detect(frame.buffer, configuration: colorConfiguration)
-                    if useHybrid {
-                        detections = HybridTargetFusion.associate(markers: colorBoxes, people: people)
-                    } else {
-                        detections = colorBoxes.map { marker in
-                            let match = showAdaptiveMarker
-                                ? VisualBodyAssociation.bestPerson(for: marker, among: people) : nil
-                            return HumanDetection(id: UUID(), box: marker, confidence: 0,
-                                                  humanSupported: match != nil,
-                                                  matchedPersonBox: match)
-                        }
-                    }
-                } else {
-                    detections = peopleResults.prefix(24).map {
-                        HumanDetection(id: UUID(), box: $0.boundingBox, confidence: $0.confidence,
-                                       humanSupported: true, matchedPersonBox: $0.boundingBox)
-                    }
-                }
+                // YOLO processes decoded Remote Play frames using Core ML
+                // without Apple Vision. Warm-colored HUD cues are associated
+                // with detected bodies, automatically and without manual names.
+                let found = try CoreMLYOLODetector.shared.detect(frame.buffer, threshold: minimum)
+                let people = found.map(\.box)
+                let markers = try ColorTargetDetector.detect(
+                    frame.buffer,
+                    configuration: ColorTrackingConfiguration(
+                        hue: 0.035, tolerance: 0.13,
+                        minimumSaturation: 0.55, minimumBrightness: 0.32))
+                let detections = HybridTargetFusion.associate(markers: markers, people: people)
                 report = HumanAnalysis(detections: detections, imageSize: size, capturedAt: now,
                                        milliseconds: (ProcessInfo.processInfo.systemUptime - start) * 1000,
                                        error: nil, visiblePlayerBoxes: people)
@@ -303,9 +272,9 @@ struct AIAnalysisSettings: View {
                         .frame(maxWidth: .infinity, minHeight: 54)
                 }.buttonStyle(AcidButtonStyle(active: true))
                 VelmiraSection("الذكاء الاصطناعي — معاينة البث") {
-                    Button("إعداد التتبّع المدمج: لون + جسم") { model.prepareHybridTracking() }
+                    Button("تحليل تلقائي: YOLO + علامات الخصوم") { model.prepareHybridTracking() }
                     Toggle("تشغيل تحليل الصورة", isOn: $model.enabled)
-                    Toggle("استخدام لون علامة الخصم", isOn: $model.colorMode)
+                    Text("يتعرف على العلامات الدافئة تلقائياً، دون اختيار لون.")
                     if model.colorMode {
                         Toggle("دمج كشف اللون مع تحليل الأشخاص بالذكاء الاصطناعي", isOn: $model.hybridMode)
                         Text("يشترط لون العلامة مع جسم مكتشف ومطابقة واضحة بينهما. عند فقد أحدهما يتوقف التتبّع؛ لون العلامة لا يثبت الفريق وحده.")
@@ -323,17 +292,6 @@ struct AIAnalysisSettings: View {
                             .font(.footnote).foregroundStyle(.orange)
                         Text("التأكيد لا يثبت أن الشخصية من فريق الخصم. استخدم لون العلامة المميز وراجع النتائج.")
                             .font(.footnote)
-                    }
-                    if model.colorMode {
-                        HStack {
-                            Button("أحمر") { model.colorHue = 0 }
-                            Button("أرجواني") { model.colorHue = 0.88 }
-                            Button("أصفر") { model.colorHue = 0.16 }
-                        }.buttonStyle(.bordered)
-                        Rectangle().fill(Color(hue: model.colorHue, saturation: 1, brightness: 1)).frame(height: 18)
-                        Slider(value: $model.colorHue, in: 0...1) { Text("لون العلامة") }
-                        Slider(value: $model.colorTolerance, in: 0.01...0.15) { Text("سماحية اللون") }
-                        Text("اختر لون اسم الخصم. أي عنصر بنفس اللون قد يُكشف خطأً؛ لا توجد معرفة بهوية اللاعب.")
                     }
                     Text("ابدأ اتصال PS5 من قسم اللعب. تظهر الإطارات فوق الأشخاص المحتملين داخل البث، دون إرسال الصور إلى خادم.")
                     Text("التحليل وحده للمعاينة. فعّل الحركة والماكروز بشكل منفصل من قسم التحكم.").foregroundStyle(.cyan)
@@ -388,7 +346,7 @@ struct AIAnalysisSettings: View {
                     }
                 }
                 VelmiraSection("حدود الكشف") {
-                    Text("Apple Vision نموذج عام، غير مدرَّب هنا على Call of Duty. قد يفوّت الشخصيات أو يكتشف مناطق خاطئة، ولا يميز الخصم من الصديق أو يؤكد موت الشخصية. درجة الثقة ليست ضمانًا.")
+                    Text("YOLOv3 Tiny مدرب على COCO وليس MW3؛ قد تفوته الشخصيات الصغيرة. الكشف عن الخصوم من العلامات الدافئة تقديري وغير مضمون.")
                     Text("دقة 99٪ هدف للاختبار ببيانات حقيقية، وليست نتيجة مثبتة. لتقييم الدقة نحتاج قياس الاكتشافات الصحيحة والمفقودة والخاطئة.")
                     Text("نسخة تطوير: الأداء والاتصال بحاجة لتجربة على iPhone 17 Pro وPS5.")
                 }
@@ -437,7 +395,7 @@ final class MatchRoster: ObservableObject {
     @Published var matchNumber = 1
     @Published var autoScanEnabled = UserDefaults.standard.object(forKey: "velmira.roster.autoscan.v1") as? Bool ?? true {
         didSet {
-            AutoRosterScanner.shared.configure(enabled: autoScanEnabled)
+            // YOLO does not read names; no OCR scanner is launched.
             if !autoScanEnabled { pending.removeAll() }
         }
     }
@@ -550,124 +508,26 @@ final class MatchRoster: ObservableObject {
         message = "تم مسح بيانات المباراة السابقة."
     }
     func read(_ data: Data) async {
-        guard !reading else { return }
-        reading = true
-        let token = UUID()
-        generation = token
-        message = "جارٍ قراءة النصوص محلياً…"
-        let result = await Task.detached(priority: .userInitiated) { () -> Result<[String], Error> in
-            do {
-                let request = VNRecognizeTextRequest()
-                request.recognitionLevel = .accurate
-                request.usesLanguageCorrection = false
-                request.automaticallyDetectsLanguage = true
-                try VNImageRequestHandler(data: data, options: [:]).perform([request])
-                var seen = Set<String>()
-                let names = (request.results ?? []).compactMap { observation -> String? in
-                    guard let candidate = observation.topCandidates(1).first,
-                          candidate.confidence >= 0.55 else { return nil }
-                    let text = candidate.string.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard text.count >= 2, text.count <= 64,
-                          text.rangeOfCharacter(from: .letters) != nil,
-                          seen.insert(text.lowercased()).inserted else { return nil }
-                    return text
-                }
-                return .success(names)
-            } catch { return .failure(error) }
-        }.value
-        guard generation == token else { return }
-        reading = false
-        switch result {
-        case .success(let values):
-            let existing = Set(names.map { $0.name.lowercased() })
-            names.append(contentsOf: values.filter { !existing.contains($0.lowercased()) }.map { RosterName(name: $0) })
-            message = values.isEmpty ? "لم تُقرأ أسماء واضحة. استخدم صورة أوضح." : "راجع النصوص: قد تتضمن عناوين وإحصاءات. صحّح الأسماء وحدد الفريق لكل اسم."
-        case .failure(let error):
-            message = "تعذرت القراءة: " + error.localizedDescription
-        }
+        message = "YOLO يكشف الأشخاص، لا نصوص الأسماء؛ الكشف الآلي لا يحتاج أسماء."
     }
 }
 struct MatchRosterView: View {
     @ObservedObject private var roster = MatchRoster.shared
-    @State private var autoScanSavedNotice = ""
-    @State private var photo: PhotosPickerItem?
-    @State private var showReset = false
-    @State private var newName = ""
     var body: some View {
         ScrollView {
-            VStack(spacing: 16) {
-                VelmiraSection("قائمة المباراة \(roster.matchNumber)") {
-                    Text("قراءة أسماء لوحة النتائج بالذكاء الاصطناعي على جهازك.")
-                    Toggle("التقاط أسماء اللاعبين تلقائيًا أثناء بث PS5", isOn: $roster.autoScanEnabled)
-                    Button {
-                        roster.saveAutoScanSetting()
-                        autoScanSavedNotice = "تم حفظ إعداد التقاط الأسماء التلقائي."
-                    } label: {
-                        Label("حفظ إعدادات قائمة الفرق", systemImage: "square.and.arrow.down")
-                            .frame(maxWidth: .infinity, minHeight: 44)
-                    }
-                    .buttonStyle(AcidButtonStyle(active: true))
-                    if !autoScanSavedNotice.isEmpty {
-                        Text(autoScanSavedNotice).font(.footnote)
-                    }
-                    Text("الأحمر الغامق = الخصوم، الأزرق = فريقي. يتطلب تكرار الاسم في لقطتين على الأقل؛ التصنيف تقريبي ويحتاج مراجعة.")
-                        .font(.footnote).foregroundStyle(.orange)
-                    Text(roster.autoStatus).font(.footnote)
-                    Text("بدء مباراة جديدة لا يُكتشف تلقائيًا بعد؛ استخدم زر مسح القائمتين عند تغيير المباراة.")
-                        .font(.footnote)
-                    PhotosPicker(selection: $photo, matching: .images) {
-                        Label("قراءة صورة لوحة النتائج", systemImage: "text.viewfinder")
-                            .frame(maxWidth: .infinity, minHeight: 48)
-                    }.buttonStyle(AcidButtonStyle(active: true)).disabled(roster.reading)
-                    if roster.reading { ProgressView() }
-                    Text(roster.message).font(.footnote)
-                    Button("مباراة جديدة — مسح القائمتين", role: .destructive) { showReset = true }
-                }
-                ForEach(RosterSide.allCases) { side in
-                    VelmiraSection("\(side.rawValue) • \(roster.names.filter { $0.side == side }.count)") {
-                        if !roster.names.contains(where: { $0.side == side }) {
-                            Text("لا توجد أسماء").font(.footnote)
-                        }
-                        ForEach($roster.names) { $entry in
-                            if entry.side == side {
-                                RosterEntryEditor(entry: $entry) {
-                                    roster.names.removeAll { $0.id == entry.id }
-                                }
-                            }
-                        }
-                    }
-                }
-                VelmiraSection("إضافة اسم يدوياً") {
-                    TextField("اسم اللاعب", text: $newName).textFieldStyle(AcidFieldStyle())
-                        .textInputAutocapitalization(.never).autocorrectionDisabled()
-                    Button("إضافة للمراجعة") {
-                        let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
-                        if !name.isEmpty { roster.names.append(RosterName(name: name)); newName = "" }
-                    }.disabled(newName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
+            VStack(alignment: .leading, spacing: 14) {
+                Text("الكشف التلقائي — YOLO").font(.headline)
+                Text("يكتشف YOLO الأشخاص، وتحلّل الأداة العلامات الدافئة فوقهم تلقائياً. لا تحتاج إلى إدخال أسماء أو ألوان.")
+                Text("هذا تصنيف تقريبي اعتماداً على الشاشة وليس معرفة مؤكدة بالفرق.")
+                    .font(.footnote).foregroundStyle(.orange)
+                Button("بداية مباراة جديدة", role: .destructive) { roster.reset() }
+                    .buttonStyle(.bordered)
             }.padding(20)
         }
-        .background(TPPlayTheme.canvas)
-        .navigationTitle("الفريق والخصوم")
-        .navigationBarTitleDisplayMode(.inline)
-        .onDisappear { roster.restoreAutoScanSetting() }
+        .navigationTitle("تحليل الخصوم")
         .environment(\.layoutDirection, .rightToLeft)
-        .confirmationDialog("مسح جميع أسماء المباراة السابقة؟", isPresented: $showReset, titleVisibility: .visible) {
-            Button("بدء مباراة جديدة", role: .destructive) { roster.reset() }
-        }
-        .onChange(of: photo) { _, item in
-            guard let item else { return }
-            Task {
-                do {
-                    if let data = try await item.loadTransferable(type: Data.self) { await roster.read(data) }
-                    else { roster.message = "تعذر تحميل الصورة." }
-                } catch { roster.message = "تعذر تحميل الصورة: " + error.localizedDescription }
-                photo = nil
-            }
-        }
     }
 }
-
 
 /// Keep the name/color editor small to avoid complex SwiftUI type-checking in the roster.
 private struct RosterEntryEditor: View {
@@ -723,150 +583,3 @@ private struct RosterEntryEditor: View {
 }
 
 
-/// Low-rate, read-only scoreboard/nameplate OCR. Classification is provisional.
-/// This component never sends controller input or enables any assistance mode.
-final class AutoRosterScanner: @unchecked Sendable {
-    static let shared = AutoRosterScanner()
-
-    private let lock = NSLock()
-    private let queue = DispatchQueue(label: "app.velmira.roster.ocr", qos: .utility)
-    private var enabled = UserDefaults.standard.object(forKey: "velmira.roster.autoscan.v1") as? Bool ?? true
-    private var paused = true
-    private var busy = false
-    private var lastRun: TimeInterval = 0
-    private var generation: UInt64 = 0
-
-    func configure(enabled: Bool) {
-        lock.lock()
-        self.enabled = enabled
-        generation &+= 1
-        lock.unlock()
-    }
-
-    func setPaused(_ pause: Bool) {
-        lock.lock()
-        paused = pause
-        generation &+= 1
-        lock.unlock()
-    }
-
-    private func active(_ token: UInt64) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return enabled && !paused && generation == token
-    }
-
-    func submit(_ buffer: CVPixelBuffer) {
-        let now = ProcessInfo.processInfo.systemUptime
-        let state = ProcessInfo.processInfo.thermalState
-        let interval: TimeInterval = (state == .serious || state == .critical) ? 3 : 1.5
-        lock.lock()
-        guard enabled && !paused && !busy && now - lastRun >= interval else {
-            lock.unlock()
-            return
-        }
-        busy = true
-        lastRun = now
-        let token = generation
-        lock.unlock()
-
-        let frame = RetainedVideoFrame(buffer)
-        queue.async { [self, frame] in
-            defer {
-                lock.lock()
-                busy = false
-                lock.unlock()
-            }
-            guard active(token) else { return }
-
-            let request = VNRecognizeTextRequest()
-            request.recognitionLevel = .fast
-            request.usesLanguageCorrection = false
-            do {
-                try VNImageRequestHandler(cvPixelBuffer: frame.buffer, orientation: .up, options: [:])
-                    .perform([request])
-                guard active(token) else { return }
-                let observations = (request.results ?? []).filter { observation in
-                    let box = observation.boundingBox
-                    return box.width > 0.018 && box.width < 0.32 &&
-                           box.height > 0.008 && box.height < 0.065
-                }
-                guard !observations.isEmpty else { return }
-
-                let ci = CIImage(cvPixelBuffer: frame.buffer)
-                guard let image = CIContext(options: [.useSoftwareRenderer: false])
-                    .createCGImage(ci, from: ci.extent) else { return }
-
-                let candidates = observations.compactMap { item -> AutoRosterCandidate? in
-                    guard let recognized = item.topCandidates(1).first,
-                          recognized.confidence >= 0.55 else { return nil }
-                    let name = recognized.string.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard name.count >= 2, name.count <= 24,
-                          name.rangeOfCharacter(from: .letters) != nil,
-                          !name.contains("\n") else { return nil }
-                    guard let detected = Self.readNameColor(in: image, box: item.boundingBox) else {
-                        return nil
-                    }
-                    return AutoRosterCandidate(name: name, side: detected.side, hex: detected.hex)
-                }
-                guard !candidates.isEmpty, active(token) else { return }
-                Task { @MainActor in
-                    guard self.active(token) else { return }
-                    MatchRoster.shared.acceptAutoCandidates(candidates, sampledAt: now)
-                }
-            } catch {
-                // OCR failures do not interrupt the live video session.
-            }
-        }
-    }
-
-    private static func readNameColor(in image: CGImage, box: CGRect)
-        -> (side: RosterSide, hex: String)? {
-        let rect = CGRect(x: box.minX * CGFloat(image.width),
-                          y: (1 - box.maxY) * CGFloat(image.height),
-                          width: box.width * CGFloat(image.width),
-                          height: box.height * CGFloat(image.height)).integral
-            .intersection(CGRect(x: 0, y: 0, width: CGFloat(image.width),
-                                 height: CGFloat(image.height)))
-        guard !rect.isNull, rect.width >= 4, rect.height >= 3,
-              let cropped = image.cropping(to: rect) else { return nil }
-        let w = min(96, cropped.width)
-        let h = min(24, cropped.height)
-        var pixels = [UInt8](repeating: 0, count: w * h * 4)
-        let rendered = pixels.withUnsafeMutableBytes { raw -> Bool in
-            guard let ctx = CGContext(data: raw.baseAddress, width: w, height: h,
-                                      bitsPerComponent: 8, bytesPerRow: w * 4,
-                                      space: CGColorSpaceCreateDeviceRGB(),
-                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
-            else { return false }
-            ctx.draw(cropped, in: CGRect(x: 0, y: 0, width: CGFloat(w), height: CGFloat(h)))
-            return true
-        }
-        guard rendered else { return nil }
-
-        var redCount = 0, blueCount = 0
-        var red = (0, 0, 0), blue = (0, 0, 0)
-        for i in stride(from: 0, to: pixels.count, by: 4) {
-            let r = Int(pixels[i]), g = Int(pixels[i+1]), b = Int(pixels[i+2])
-            if r >= 52 && r > Int(Double(g) * 1.45) && r > Int(Double(b) * 1.4) {
-                redCount += 1
-                red.0 += r; red.1 += g; red.2 += b
-            } else if b >= 65 && b > Int(Double(r) * 1.35) &&
-                      b > Int(Double(g) * 1.1) {
-                blueCount += 1
-                blue.0 += r; blue.1 += g; blue.2 += b
-            }
-        }
-        // Avoid ambiguous mixed-color names and backgrounds.
-        guard max(redCount, blueCount) >= 4 else { return nil }
-        if redCount >= blueCount * 3 && redCount >= 4 {
-            return (.opponent, String(format: "#%02X%02X%02X",
-                                     red.0 / redCount, red.1 / redCount, red.2 / redCount))
-        }
-        if blueCount >= redCount * 3 && blueCount >= 4 {
-            return (.friendly, String(format: "#%02X%02X%02X",
-                                     blue.0 / blueCount, blue.1 / blueCount, blue.2 / blueCount))
-        }
-        return nil
-    }
-}
