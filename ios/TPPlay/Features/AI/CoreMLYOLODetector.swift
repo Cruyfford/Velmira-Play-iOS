@@ -9,7 +9,8 @@ struct YOLOPersonCandidate {
 }
 
 /// Uses Apple's real YOLOv3 Tiny INT8 Core ML model; never calls Apple Vision.
-final class CoreMLYOLODetector {
+final class CoreMLYOLODetector: @unchecked Sendable {
+    // Access serialized by AIFrameAnalyzer's single inference queue.
     static let shared = CoreMLYOLODetector()
     private let model: MLModel?
     private let imageInput: String
