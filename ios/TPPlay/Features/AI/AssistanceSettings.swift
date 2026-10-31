@@ -3,7 +3,6 @@ import GameController
 import CoreVideo
 import CoreImage
 import UIKit
-import Vision
 
 @MainActor
 final class AssistanceState: ObservableObject {
@@ -66,16 +65,16 @@ struct AssistanceSettings: View {
                         Text("سبب الإيقاف: \(reason)")
                             .font(.footnote).foregroundStyle(.orange)
                     }
-                    Text("تعديلات مصدر لم تُختبر على PS5 بعد. كشف الأشخاص لا يميز العدو من الصديق. وضع اللون يعتمد على لون علامة الخصم الذي تختاره.").font(.footnote)
+                    Text("YOLO وتجميع العلامات يعملان محلياً. تصنيف الخصوم من لون HUD تقديري، ولم يُختبر على PS5 بعد.").font(.footnote)
                 }
                 VelmiraSection("التتبّع") {
-                    Button("إعداد التتبّع المدمج: لون + جسم") {
+                    Button("بدء YOLO والتصنيف التلقائي") {
                         model.emergencyStop(reason: "اختر لون الخصم ثم فعّل المساعدة")
                         vision.prepareHybridTracking()
                         model.configuration.tracking = true
                         model.configuration.pointX = 0.5
                         model.configuration.pointY = 0.5
-                        savedNotice = "اختر لون علامة الخصم بالمعايرة، ثم احفظ الإعدادات وفعّل المساعدة عند L2."
+                        savedNotice = "كشف اللون واللاعب تلقائي. احفظ الإعدادات ثم فعّل المساعدة."
                     }
                     Button("قفل مستمر على الهدف — مع L2 وبدونه") {
                         model.emergencyStop(reason: "فعّل المساعدة يدوياً بعد ضبط القفل المستمر")
@@ -109,7 +108,7 @@ struct AssistanceSettings: View {
                         .font(.footnote)
                     if vision.colorMode {
                         Toggle("اشتراط جسم مكتشف مع لون الخصم", isOn: $vision.hybridMode)
-                        Text("في الوضع المدمج يتبع التصويب موضع الجسم المختار؛ الإزاحة من الاسم تخص وضع اللون وحده.").font(.footnote)
+                        Text("YOLO يحدد الجسم ويحلّل موقع علامة HUD تلقائياً.").font(.footnote)
                     }
                     Toggle("تحريك التصويب نحو الهدف", isOn: $model.configuration.tracking)
                     Toggle("الاستمرار في قفل الهدف بدون L2",
@@ -136,27 +135,11 @@ struct AssistanceSettings: View {
                     valueSlider("مهلة فقد الهدف بالثواني", value: $model.configuration.lossDelay, range: 0.15...2)
                     Text("في وضع L2 التقليدي، قد يلزم ترك L2 عند فقدان الهدف. أما القفل المستمر فيسمح باكتساب هدف مؤكد جديد بعد مهلة الفقد، دون تحريك التصويب على صورة قديمة.").font(.footnote)
                 }
-                VelmiraSection("لون العلامة فوق الرأس") {
-                    Toggle("استخدام تتبّع اللون", isOn: $vision.colorMode)
-                    HStack(spacing: 12) {
-                        Button("أحمر") { vision.colorHue = 0 }
-                        Button("أرجواني") { vision.colorHue = 0.88 }
-                        Button("أصفر") { vision.colorHue = 0.16 }
-                    }.buttonStyle(.bordered)
-                    Text("درجة اللون")
-                    LinearGradient(colors: [.red, .yellow, .green, .cyan, .blue, .purple, .red],
-                                   startPoint: .leading, endPoint: .trailing)
-                        .frame(height: 12).clipShape(Capsule())
-                        .environment(\.layoutDirection, .leftToRight)
-                    Slider(value: $vision.colorHue, in: 0...1)
-                        .tint(Color(hue: vision.colorHue, saturation: 1, brightness: 1))
-                        .environment(\.layoutDirection, .leftToRight)
-                        .accessibilityLabel("درجة لون العلامة")
-                    Text("سماحية اختلاف اللون")
-                    Slider(value: $vision.colorTolerance, in: 0.01...0.15)
-                        .accessibilityLabel("سماحية اختلاف اللون")
-                    Text("هذا نفس اختيار اللون في قسم الذكاء الاصطناعي. يتغير لون الاسم التوضيحي معه. يعتمد الكشف على درجة اللون وليس مطابقة درجة السطوع حرفياً.")
+                VelmiraSection("تصنيف الخصوم تلقائياً") {
+                    Text("YOLO يكشف أجسام اللاعبين، ويبحث عن علامات HUD الدافئة ويربطها بالجسم تلقائياً. لا يلزم إدخال أسماء أو ألوان.")
                         .font(.footnote)
+                    Text("لون العلامة مؤشر فقط؛ قد تختلط مؤثرات اللعبة أو تختلف ألوان الفرق، ولن يحرك البرنامج العصا إذا لم يؤكد الهدف.")
+                        .font(.footnote).foregroundStyle(.orange)
                 }
                 VelmiraSection("موضع التصويب داخل الجسم") {
                     HStack {
