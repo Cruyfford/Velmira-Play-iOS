@@ -1,6 +1,13 @@
 # Sony Remote Play launch crash — A/B test (31 Oct 2026)
 
-The user's re-signed V2 Sony-host IPA crashes at launch. **A working Sony host on iPhone is not established.** Do not merge to main.
+The user's re-signed V2 Sony-host IPA crashes at launch. The user also reports **Test A (unmodified decrypted Sony bundle re-signed by them) crashes**. Thus injection is not required to reproduce this failure. **A working Sony host on iPhone is not established.** Do not merge to main.
+
+## Test A result (user report)
+- Test A is **byte-for-byte identical in content to the supplied decrypted Sony 9.5.0 ZIP**, all 166 archive entries; no Velmira code, no Chiaki.
+- The decrypted Sony executable contains an older embedded Sony CodeDirectory signature, but **821 / 1008 signed code pages fail the embedded SHA-1 and SHA-256 hash checks** on Test A. This is expected to require a full and correct resign after decryption.
+- The user's separately re-signed Test A IPA has **not** been uploaded/inspected, so its exact CodeDirectory, entitlements, provisioning and rejection reason remain unknown.
+- **Do not ask the user to test B until A can launch.** A failure means neither an added library nor UIKit overlay is needed to trigger the launch failure.
+
 
 ## Offline analysis of user's signed IPA
 
