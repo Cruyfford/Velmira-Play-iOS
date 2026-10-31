@@ -4,13 +4,16 @@ import CoreVideo
 import CoreImage
 
 struct YOLOPersonCandidate {
-    let box: CGRect               // normalized, bottom-left origin
+    let box: CGRect  // Normalized rectangle, bottom-left origin (Vision-style geometry).
     let confidence: Float
 }
 
-/// Uses Apple's real YOLOv3 Tiny INT8 Core ML model; never calls Apple Vision.
+/// MWIII training experiment: a one-class YOLOv8n Core ML MLProgram.
+/// The model package is intentionally NOT committed to the public repository.
+/// It is bundled in the locally packaged IPA or copied by the local build script.
+/// No Apple Vision or legacy YOLOv3 decoding fallback is used.
 final class CoreMLYOLODetector: @unchecked Sendable {
-    // Access serialized by AIFrameAnalyzer's single inference queue.
+    // Calls are serialized by AIFrameAnalyzer's dedicated serial queue.
     static let shared = CoreMLYOLODetector()
     private let model: MLModel?
     private let imageInput: String
@@ -20,113 +23,172 @@ final class CoreMLYOLODetector: @unchecked Sendable {
     private let context = CIContext(options: [.useSoftwareRenderer: false])
 
     private init() {
-        guard let url = Bundle.main.url(forResource: "YOLOv3TinyInt8LUT", withExtension: "mlmodelc") else {
-            model = nil; imageInput = "image"; imageWidth = 416; imageHeight = 416
-            loadFailure = "نموذج YOLO غير موجود في حزمة التطبيق."
-            return
-        }
         do {
-            let config = MLModelConfiguration()
-            config.computeUnits = .cpuAndNeuralEngine
-            let loaded = try MLModel(contentsOf: url, configuration: config)
-            guard let feature = loaded.modelDescription.inputDescriptionsByName.first(where: { $0.value.type == .image }),
-                  let constraint = feature.value.imageConstraint else {
-                model = nil; imageInput = "image"; imageWidth = 416; imageHeight = 416
-                loadFailure = "صيغة مدخل صورة YOLO غير صحيحة."
-                return
+            let fm = FileManager.default
+            let compiled: URL
+            if let packaged = Bundle.main.url(forResource: "VelmiraMW3", withExtension: "mlmodelc") {
+                compiled = packaged
+            } else if let source = Bundle.main.url(forResource: "VelmiraMW3", withExtension: "mlpackage") {
+                // A signed IPA may contain an unpacked .mlpackage resource.
+                // Compile once OFF the main thread, cache persistently to avoid
+                // expensive compilation on every subsequent launch.
+                let support = try fm.url(for: .applicationSupportDirectory,
+                                         in: .userDomainMask, appropriateFor: nil, create: true)
+                let cached = support.appendingPathComponent("VelmiraMW3-yolov8n-20261031.mlmodelc")
+                if fm.fileExists(atPath: cached.path) {
+                    compiled = cached
+                } else {
+                    let temporary = try MLModel.compileModel(at: source)
+                    try fm.moveItem(at: temporary, to: cached)
+                    compiled = cached
+                }
+            } else {
+                throw NSError(domain: "VelmiraYOLO", code: 1,
+                              userInfo: [NSLocalizedDescriptionKey:
+                                "نموذج VelmiraMW3.mlpackage غير موجود داخل التطبيق."])
             }
-            model = loaded; imageInput = feature.key
-            imageWidth = constraint.pixelsWide; imageHeight = constraint.pixelsHigh
+
+            let configuration = MLModelConfiguration()
+            configuration.computeUnits = .all
+            let loaded = try MLModel(contentsOf: compiled, configuration: configuration)
+            guard let input = loaded.modelDescription.inputDescriptionsByName.first(where: {
+                $0.value.type == .image
+            }), let constraint = input.value.imageConstraint else {
+                throw NSError(domain: "VelmiraYOLO", code: 2,
+                              userInfo: [NSLocalizedDescriptionKey: "YOLO لا يحتوي مدخل صورة صالحاً."])
+            }
+            guard constraint.pixelsWide == 352 && constraint.pixelsHigh == 352,
+                  let output = loaded.modelDescription.outputDescriptionsByName["var_910"],
+                  output.type == .multiArray else {
+                throw NSError(domain: "VelmiraYOLO", code: 3,
+                              userInfo: [NSLocalizedDescriptionKey:
+                                "هذا ليس نموذج MW3 YOLOv8n المتدرّب (352px / var_910)."])
+            }
+            model = loaded
+            imageInput = input.key
+            imageWidth = constraint.pixelsWide
+            imageHeight = constraint.pixelsHigh
             loadFailure = nil
         } catch {
-            model = nil; imageInput = "image"; imageWidth = 416; imageHeight = 416
-            loadFailure = "فشل تحميل YOLO: \(error.localizedDescription)"
+            model = nil
+            imageInput = "image"
+            imageWidth = 352
+            imageHeight = 352
+            loadFailure = "تعذر تشغيل YOLOv8 المدرب: \(error.localizedDescription)"
         }
     }
 
     func detect(_ frame: CVPixelBuffer, threshold: Float) throws -> [YOLOPersonCandidate] {
         guard let model else {
-            throw NSError(domain: "VelmiraYOLO", code: 1,
-                          userInfo: [NSLocalizedDescriptionKey: loadFailure ?? "YOLO غير جاهز"])
+            throw NSError(domain: "VelmiraYOLO", code: 4,
+                          userInfo: [NSLocalizedDescriptionKey: loadFailure ?? "نموذج YOLO غير متوفر"])
         }
-        let sourceWidth = CGFloat(CVPixelBufferGetWidth(frame))
-        let sourceHeight = CGFloat(CVPixelBufferGetHeight(frame))
-        guard sourceWidth > 0, sourceHeight > 0 else { return [] }
-        let w = CGFloat(imageWidth), h = CGFloat(imageHeight)
-        let ratio = min(w/sourceWidth, h/sourceHeight)
-        let drawnWidth = sourceWidth*ratio, drawnHeight = sourceHeight*ratio
-        let offsetX = (w-drawnWidth)/2, offsetY = (h-drawnHeight)/2
+        let originalWidth = CGFloat(CVPixelBufferGetWidth(frame))
+        let originalHeight = CGFloat(CVPixelBufferGetHeight(frame))
+        guard originalWidth > 0, originalHeight > 0 else { return [] }
+        let width = CGFloat(imageWidth), height = CGFloat(imageHeight)
+        let ratio = min(width / originalWidth, height / originalHeight)
+        let renderedWidth = originalWidth * ratio
+        let renderedHeight = originalHeight * ratio
+        let padX = (width - renderedWidth) / 2
+        let padY = (height - renderedHeight) / 2
 
-        var outputBuffer: CVPixelBuffer?
-        let attrs: [CFString: Any] = [
+        var target: CVPixelBuffer?
+        let attributes: [CFString: Any] = [
             kCVPixelBufferCGImageCompatibilityKey: true,
-            kCVPixelBufferCGBitmapContextCompatibilityKey: true
+            kCVPixelBufferCGBitmapContextCompatibilityKey: true,
+            kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary
         ]
-        let created = CVPixelBufferCreate(kCFAllocatorDefault, imageWidth, imageHeight,
-                                          kCVPixelFormatType_32BGRA, attrs as CFDictionary,
-                                          &outputBuffer)
-        guard created == kCVReturnSuccess, let outputBuffer else {
-            throw NSError(domain: "VelmiraYOLO", code: 2,
-                          userInfo: [NSLocalizedDescriptionKey: "تعذر تغيير حجم إطار YOLO"])
+        let result = CVPixelBufferCreate(kCFAllocatorDefault, imageWidth, imageHeight,
+                                         kCVPixelFormatType_32BGRA, attributes as CFDictionary,
+                                         &target)
+        guard result == kCVReturnSuccess, let target else {
+            throw NSError(domain: "VelmiraYOLO", code: 5,
+                          userInfo: [NSLocalizedDescriptionKey: "تعذر تجهيز إطار YOLO."])
         }
-
         let transformed = CIImage(cvPixelBuffer: frame)
             .transformed(by: CGAffineTransform(scaleX: ratio, y: ratio))
-            .transformed(by: CGAffineTransform(translationX: offsetX, y: offsetY))
-        let black = CIImage(color: .black).cropped(to: CGRect(x: 0, y: 0, width: w, height: h))
-        context.render(transformed.composited(over: black), to: outputBuffer)
+            .transformed(by: CGAffineTransform(translationX: padX, y: padY))
+        let background = CIImage(color: .black)
+            .cropped(to: CGRect(x: 0, y: 0, width: width, height: height))
+        context.render(transformed.composited(over: background), to: target)
         let input = try MLDictionaryFeatureProvider(dictionary: [
-            imageInput: MLFeatureValue(pixelBuffer: outputBuffer)
+            imageInput: MLFeatureValue(pixelBuffer: target)
         ])
         let prediction = try model.prediction(from: input)
-        guard let scores = prediction.featureValue(for: "confidence")?.multiArrayValue,
-              let coords = prediction.featureValue(for: "coordinates")?.multiArrayValue,
-              scores.shape.count == 2, coords.shape.count == 2,
-              scores.shape[1].intValue == 80, coords.shape[1].intValue == 4 else {
-            throw NSError(domain: "VelmiraYOLO", code: 3,
-                          userInfo: [NSLocalizedDescriptionKey: "صيغة مخرجات نموذج YOLO غير مدعومة"])
+        guard let tensor = prediction.featureValue(for: "var_910")?.multiArrayValue else {
+            throw NSError(domain: "VelmiraYOLO", code: 6,
+                          userInfo: [NSLocalizedDescriptionKey: "مخرجات YOLOv8 غير موجودة."])
         }
-
-        let count = min(scores.shape[0].intValue, coords.shape[0].intValue)
-        var persons = [YOLOPersonCandidate]()
-        for i in 0..<count {
-            let score = scores[[NSNumber(value: i), 0]].floatValue
-            guard score.isFinite, score >= threshold else { continue }
-            let cx = coords[[NSNumber(value: i), 0]].doubleValue
-            let cy = coords[[NSNumber(value: i), 1]].doubleValue
-            let bw = coords[[NSNumber(value: i), 2]].doubleValue
-            let bh = coords[[NSNumber(value: i), 3]].doubleValue
-            guard cx.isFinite, cy.isFinite, bw.isFinite, bh.isFinite, bw > 0, bh > 0 else { continue }
-
-            // Apple model returns normalized xywh; unletterbox and flip Y to
-            // match the bottom-left coordinates used by the tracking engine.
-            let x0 = ((cx-bw/2)*Double(w)-Double(offsetX))/Double(drawnWidth)
-            let x1 = ((cx+bw/2)*Double(w)-Double(offsetX))/Double(drawnWidth)
-            let yTop = ((cy-bh/2)*Double(h)-Double(offsetY))/Double(drawnHeight)
-            let yBottom = ((cy+bh/2)*Double(h)-Double(offsetY))/Double(drawnHeight)
-            let left = max(0, min(1, x0)), right = max(0, min(1, x1))
-            let bottom = max(0, min(1, 1-yBottom)), top = max(0, min(1, 1-yTop))
-            guard right-left >= 0.01, top-bottom >= 0.04 else { continue }
-            persons.append(YOLOPersonCandidate(
-                box: CGRect(x: left, y: bottom, width: right-left, height: top-bottom),
-                confidence: score))
-        }
-        persons.sort { $0.confidence > $1.confidence }
-        var filtered = [YOLOPersonCandidate]()
-        for person in persons {
-            if filtered.allSatisfy({ Self.overlap($0.box, person.box) < 0.45 }) {
-                filtered.append(person)
-                if filtered.count >= 24 { break }
-            }
-        }
-        return filtered
+        return try Self.decode(tensor, scoreThreshold: threshold,
+                               inputWidth: Double(width), inputHeight: Double(height),
+                               padX: Double(padX), padY: Double(padY),
+                               contentWidth: Double(renderedWidth),
+                               contentHeight: Double(renderedHeight))
     }
 
-    private static func overlap(_ a: CGRect, _ b: CGRect) -> CGFloat {
+    /// Model export: float32 [1,5,2541] where rows 0..3 are xywh
+    /// *in pixels of the 352px letterboxed model input*, row 4 is Enemy score.
+    /// Shape and strides are checked; NMS is not part of the trained model.
+    static func decode(_ tensor: MLMultiArray, scoreThreshold: Float,
+                       inputWidth: Double, inputHeight: Double,
+                       padX: Double, padY: Double,
+                       contentWidth: Double, contentHeight: Double) throws -> [YOLOPersonCandidate] {
+        let shape = tensor.shape.map(\.intValue)
+        guard shape.count == 3, shape[0] == 1, shape[1] == 5,
+              shape[2] == 2541, tensor.dataType == .float32,
+              inputWidth > 0, inputHeight > 0,
+              contentWidth > 0, contentHeight > 0 else {
+            throw NSError(domain: "VelmiraYOLO", code: 7,
+                          userInfo: [NSLocalizedDescriptionKey:
+                            "أبعاد Tensor الخاصة بنموذج YOLOv8 لا تطابق [1,5,2541]."])
+        }
+        let strideChannel = tensor.strides[1].intValue
+        let stridePrediction = tensor.strides[2].intValue
+        let pointer = tensor.dataPointer.assumingMemoryBound(to: Float.self)
+        var proposals = [YOLOPersonCandidate]()
+        proposals.reserveCapacity(128)
+
+        for index in 0..<shape[2] {
+            let confidence = pointer[4 * strideChannel + index * stridePrediction]
+            guard confidence.isFinite, confidence >= scoreThreshold else { continue }
+            let cx = Double(pointer[index * stridePrediction])
+            let cy = Double(pointer[strideChannel + index * stridePrediction])
+            let w = Double(pointer[2 * strideChannel + index * stridePrediction])
+            let h = Double(pointer[3 * strideChannel + index * stridePrediction])
+            guard cx.isFinite, cy.isFinite, w.isFinite, h.isFinite,
+                  w > 0, h > 0 else { continue }
+            let x0 = (cx - w / 2 - padX) / contentWidth
+            let x1 = (cx + w / 2 - padX) / contentWidth
+            // Core ML YOLO output xywh is top-left-based pixel geometry.
+            let top = (cy - h / 2 - padY) / contentHeight
+            let bottom = (cy + h / 2 - padY) / contentHeight
+            let left = max(0, min(1, x0))
+            let right = max(0, min(1, x1))
+            let lower = max(0, min(1, 1 - bottom))
+            let upper = max(0, min(1, 1 - top))
+            guard right - left >= 0.01, upper - lower >= 0.035 else { continue }
+            proposals.append(YOLOPersonCandidate(
+                box: CGRect(x: left, y: lower,
+                            width: right - left, height: upper - lower),
+                confidence: confidence))
+        }
+        proposals.sort { $0.confidence > $1.confidence }
+        var accepted = [YOLOPersonCandidate]()
+        for proposed in proposals {
+            if accepted.allSatisfy({ Self.iou($0.box, proposed.box) <= 0.45 }) {
+                accepted.append(proposed)
+                if accepted.count == 24 { break }
+            }
+        }
+        return accepted
+    }
+
+    private static func iou(_ a: CGRect, _ b: CGRect) -> CGFloat {
         let rect = a.intersection(b)
         if rect.isNull { return 0 }
-        let area = rect.width*rect.height
-        let union = a.width*a.height+b.width*b.height-area
-        return union > 0 ? area/union : 0
+        let intersect = rect.width * rect.height
+        let union = a.width * a.height + b.width * b.height - intersect
+        return union > 0 ? intersect / union : 0
     }
 }
