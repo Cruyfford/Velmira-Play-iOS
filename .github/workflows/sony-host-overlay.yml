@@ -26,3 +26,18 @@ jobs:
         with:
           name: VelmiraSonyOverlay-UNSIGNED
           path: build/sony-host/VelmiraSonyOverlay.dylib
+      - name: Compile no-op dylib diagnostic (no UIKit)
+        run: |
+          mkdir -p build/sony-host/noop
+          xcrun --sdk iphoneos clang -arch arm64 -target arm64-apple-ios16.0 \
+            -dynamiclib -fvisibility=hidden \
+            -Wl,-install_name,@rpath/VelmiraSonyOverlay.dylib \
+            sony-host/VelmiraNoopProbe.m \
+            -o build/sony-host/noop/VelmiraSonyOverlay.dylib
+          file build/sony-host/noop/VelmiraSonyOverlay.dylib
+      - name: Upload no-op diagnostic
+        uses: actions/upload-artifact@v4
+        with:
+          name: VelmiraSony-Noop-Probe-UNSIGNED
+          path: build/sony-host/noop/VelmiraSonyOverlay.dylib
+          if-no-files-found: error
