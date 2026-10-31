@@ -18,7 +18,7 @@ final class AIAnalysisState: ObservableObject {
     @Published var colorTolerance = 0.045 { didSet { configure() } }
     @Published var enabled = false { didSet { configure() } }
     @Published var threshold = 0.6 { didSet { configure() } }
-    @Published var rate = 8.0 { didSet { configure() } }
+    @Published var rate = 12.0 { didSet { configure() } }
     @Published private(set) var result: HumanAnalysis?
     private struct SavedAISettings: Codable {
         var colorMode: Bool
@@ -82,7 +82,7 @@ final class AIAnalysisState: ObservableObject {
         hybridMode = true
         precisionMode = true
         adaptiveBodyMarker = true
-        rate = 12
+        rate = 20
         enabled = true
     }
 
@@ -146,7 +146,7 @@ final class AIFrameAnalyzer: @unchecked Sendable {
         self.adaptiveBodyMarker = adaptiveBodyMarker
         self.color = color
         self.enabled = enabled; self.threshold = min(0.95, max(0.2, threshold))
-        self.rate = min(12, max(1, rate)); generation &+= 1
+        self.rate = min(24, max(1, rate)); generation &+= 1
     }
     func invalidate() { lock.lock(); generation &+= 1; lock.unlock() }
     func setPaused(_ value: Bool) {
@@ -305,9 +305,11 @@ struct AIAnalysisSettings: View {
                         Text("3").tag(3.0)
                         Text("5").tag(5.0)
                         Text("8").tag(8.0)
-                        Text("12 سريع").tag(12.0)
+                        Text("12").tag(12.0)
+                        Text("20 سريع").tag(20.0)
+                        Text("24 أقصى").tag(24.0)
                     }.pickerStyle(.segmented)
-                    Text("لا تعني هذه القيم معدل إطارات اللعبة. يُخفَّض التحليل تلقائيًا عند ارتفاع حرارة الجهاز.")
+                    Text("هذه طلبات لتحليل YOLO وليست FPS مضموناً. تُسقط الإطارات إذا كان التحليل مشغولاً، ويُخفَّض المعدّل عند حرارة الجهاز.")
                 }
                 VelmiraSection("حفظ إعدادات الذكاء الاصطناعي") {
                     Button {
