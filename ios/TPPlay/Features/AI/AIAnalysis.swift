@@ -17,7 +17,7 @@ final class AIAnalysisState: ObservableObject {
     @Published var colorHue = 0.0 { didSet { configure() } }
     @Published var colorTolerance = 0.045 { didSet { configure() } }
     @Published var enabled = false { didSet { configure() } }
-    @Published var threshold = 0.6 { didSet { configure() } }
+    @Published var threshold = 0.30 { didSet { configure() } }
     @Published var rate = 12.0 { didSet { configure() } }
     @Published private(set) var result: HumanAnalysis?
     private struct SavedAISettings: Codable {
@@ -82,7 +82,8 @@ final class AIAnalysisState: ObservableObject {
         hybridMode = true
         precisionMode = true
         adaptiveBodyMarker = true
-        rate = 20
+        threshold = 0.30
+        rate = 12
         enabled = true
     }
 
@@ -124,13 +125,13 @@ private final class RetainedVideoFrame: @unchecked Sendable {
 
 final class AIFrameAnalyzer: @unchecked Sendable {
     static let shared = AIFrameAnalyzer()
-    private let queue = DispatchQueue(label: "app.velmira.vision", qos: .userInitiated)
+    private let queue = DispatchQueue(label: "app.velmira.yolov8", qos: .userInitiated)
     private let lock = NSLock()
     private var enabled = false
     private var paused = false
     private var busy = false
     private var generation: UInt64 = 0
-    private var threshold: Float = 0.6
+    private var threshold: Float = 0.30
     private var rate = 3.0
     private var colorMode = false
     private var hybridMode = true
@@ -145,7 +146,7 @@ final class AIFrameAnalyzer: @unchecked Sendable {
         self.hybridMode = hybridMode
         self.adaptiveBodyMarker = adaptiveBodyMarker
         self.color = color
-        self.enabled = enabled; self.threshold = min(0.95, max(0.2, threshold))
+        self.enabled = enabled; self.threshold = min(0.95, max(0.15, threshold))
         self.rate = min(24, max(1, rate)); generation &+= 1
     }
     func invalidate() { lock.lock(); generation &+= 1; lock.unlock() }
@@ -173,17 +174,18 @@ final class AIFrameAnalyzer: @unchecked Sendable {
             let size = CGSize(width: CVPixelBufferGetWidth(frame.buffer), height: CVPixelBufferGetHeight(frame.buffer))
             let report: HumanAnalysis
             do {
-                // YOLO processes decoded Remote Play frames using Core ML
-                // without Apple Vision. Warm-colored HUD cues are associated
-                // with detected bodies, automatically and without manual names.
+                // This fine-tuned YOLOv8n predicts the one labeled Enemy
+                // class directly; it no longer requires a colored nameplate,
+                // OCR, manual names, or Apple Vision to permit detection.
+                // Enemy labels are probabilistic and may be wrong in MWIII.
                 let found = try CoreMLYOLODetector.shared.detect(frame.buffer, threshold: minimum)
                 let people = found.map(\.box)
-                let markers = try ColorTargetDetector.detect(
-                    frame.buffer,
-                    configuration: ColorTrackingConfiguration(
-                        hue: 0.035, tolerance: 0.13,
-                        minimumSaturation: 0.55, minimumBrightness: 0.32))
-                let detections = HybridTargetFusion.associate(markers: markers, people: people)
+                let detections = found.map { candidate in
+                    HumanDetection(id: UUID(), box: candidate.box,
+                                   confidence: candidate.confidence,
+                                   humanSupported: true,
+                                   matchedPersonBox: candidate.box)
+                }
                 report = HumanAnalysis(detections: detections, imageSize: size, capturedAt: now,
                                        milliseconds: (ProcessInfo.processInfo.systemUptime - start) * 1000,
                                        error: nil, visiblePlayerBoxes: people)
@@ -272,25 +274,20 @@ struct AIAnalysisSettings: View {
                         .frame(maxWidth: .infinity, minHeight: 54)
                 }.buttonStyle(AcidButtonStyle(active: true))
                 VelmiraSection("الذكاء الاصطناعي — معاينة البث") {
-                    Button("تحليل تلقائي: YOLO + علامات الخصوم") { model.prepareHybridTracking() }
+                    Button("كشف MW3 تلقائي — YOLOv8n المدرّب") { model.prepareHybridTracking() }
                     Toggle("تشغيل تحليل الصورة", isOn: $model.enabled)
-                    Text("يتعرف على العلامات الدافئة تلقائياً، دون اختيار لون.")
-                    if model.colorMode {
-                        Toggle("دمج كشف اللون مع تحليل الأشخاص بالذكاء الاصطناعي", isOn: $model.hybridMode)
-                        Text("يشترط لون العلامة مع جسم مكتشف ومطابقة واضحة بينهما. عند فقد أحدهما يتوقف التتبّع؛ لون العلامة لا يثبت الفريق وحده.")
-                            .font(.footnote)
-                    }
+                    Text("YOLOv8n المدرّب على بيانات MW3 يكشف فئة Enemy من صورة اللاعب دون إدخال الاسم أو لون HUD.")
                     Toggle("إظهار مربعات خضراء حول اللاعبين المكتشفين", isOn: $model.showPlayerBoxes)
                     Text("بجانب كل مربع يظهر قرب نسبي (قريب جدًا / قريب / متوسط / بعيد) حسب ارتفاع الجسم في الصورة، وليس مسافة بالمتر. الأجسام المكتشفة قد تشمل لاعبي فريقك.")
                         .font(.footnote)
                     Toggle("إظهار موضع الجسم المختار مع تغير مسافة اللاعب", isOn: $model.adaptiveBodyMarker)
-                    Text("في الوضع المدمج تتبع نقطة التصويب الجسم المكتشف وتتكيف مع حجمه. إظهار العلامة خيار مرئي؛ حركة التحكم تحتاج تفعيل المساعدة وL2.")
+                    Text("يتتبع الموضع داخل الجسم مع قفل الهدف المستمر عند تفعيله، مع L2 وبدونه. إظهار العلامة خيار مرئي فقط.")
                         .font(.footnote)
                     Toggle("تقليل الأخطاء — تأكيد عبر الإطارات", isOn: $model.precisionMode)
                     if model.precisionMode {
-                        Text("الوضع المدمج يشترط صورتين للتحقق. الأوضاع الأخرى تستخدم 3 صور عند تفعيل هذا الخيار. لا تُرسل حركة نحو هدف غائب.")
+                        Text("يتطلب تأكيد هدف YOLO في صورتين متتابعتين قبل السماح بالقفل. لا يحرّك التصويب نحو هدف غائب.")
                             .font(.footnote).foregroundStyle(.orange)
-                        Text("التأكيد لا يثبت أن الشخصية من فريق الخصم. استخدم لون العلامة المميز وراجع النتائج.")
+                        Text("فئة Enemy في النموذج تقريبية، وقد تخطئ في تمييز الحليف من الخصم.")
                             .font(.footnote)
                     }
                     Text("ابدأ اتصال PS5 من قسم اللعب. تظهر الإطارات فوق الأشخاص المحتملين داخل البث، دون إرسال الصور إلى خادم.")
@@ -348,7 +345,7 @@ struct AIAnalysisSettings: View {
                     }
                 }
                 VelmiraSection("حدود الكشف") {
-                    Text("YOLOv3 Tiny مدرب على COCO وليس MW3؛ قد تفوته الشخصيات الصغيرة. الكشف عن الخصوم من العلامات الدافئة تقديري وغير مضمون.")
+                    Text("نموذج YOLOv8n مدرّب على 214 صورة من بيانات MW3 المتاحة. نتائج الاختبار محدودة، وقد يفوّت خصوماً أو يخلط بين الحلفاء والأعداء.")
                     Text("دقة 99٪ هدف للاختبار ببيانات حقيقية، وليست نتيجة مثبتة. لتقييم الدقة نحتاج قياس الاكتشافات الصحيحة والمفقودة والخاطئة.")
                     Text("نسخة تطوير: الأداء والاتصال بحاجة لتجربة على iPhone 17 Pro وPS5.")
                 }
