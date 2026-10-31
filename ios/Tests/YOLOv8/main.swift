@@ -2,7 +2,7 @@ import Foundation
 import CoreML
 
 func check(_ condition: @autoclosure () -> Bool, _ explanation: String) {
-    if !condition { fatalError(explanation) }
+    if !condition() { fatalError(explanation) }
 }
 
 let tensor = try MLMultiArray(shape: [1, 5, 2541], dataType: .float32)
