@@ -18,6 +18,7 @@ struct RemotePlayView: View {
     @State private var playerNameShot: CalibrationShot?
     @State private var showingRoster = false
     @State private var showingStreamSettings = false
+    @State private var showingQuickSettings = false
     @State private var pendingStreamCalibration = false
     @State private var pendingScoreboardScan = false
     @State private var calibrationError = false
@@ -57,6 +58,23 @@ struct RemotePlayView: View {
 
             controls
             streamToolbar
+            if showingQuickSettings && !isEditingTouchLayout && !isChoosingTouchLayout {
+                VStack(alignment: .trailing, spacing: 0) {
+                    HStack(alignment: .top) {
+                        Spacer(minLength: 0)
+                        InStreamQuickControls(session: session,
+                            onFullSettings: {
+                                showingQuickSettings = false
+                                openStreamSettings()
+                            }, onClose: { showingQuickSettings = false })
+                            .frame(maxWidth: 370)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 14).padding(.top, 68)
+                .transition(.opacity.combined(with: .move(edge: .trailing)))
+                .zIndex(15)
+            }
 
             if showsExitConfirmation {
                 Color.black.opacity(0.74)
@@ -149,6 +167,7 @@ struct RemotePlayView: View {
             showMetrics = UserDefaults.standard.object(forKey: "velmira.showMetrics.compact.v2") as? Bool ?? false
         }) {
             InStreamSettingsCenter(
+                session: session,
                 showMetrics: $showMetrics,
                 onClose: { showingStreamSettings = false },
                 onCalibrate: {
@@ -227,6 +246,7 @@ struct RemotePlayView: View {
             updateControllerPresence(controllers)
             GCController.startWirelessControllerDiscovery()
             UIApplication.shared.isIdleTimerDisabled = true
+            VelmiraLiveDiagnostics.shared.record("STREAM", "بدأ عرض البث")
         }
         .onReceive(NotificationCenter.default.publisher(for: .GCControllerDidConnect)) { notification in
             if let controller = notification.object as? GCController {
@@ -241,6 +261,7 @@ struct RemotePlayView: View {
             updateControllerPresence(GCController.controllers())
         }
         .onDisappear {
+            VelmiraLiveDiagnostics.shared.record("STREAM", "تم إغلاق شاشة البث")
             TPPlayOrientation.set(.portrait)
             AssistanceState.shared.restoreSavedSettings()
             AIAnalysisState.shared.restoreSavedSettings()
@@ -248,6 +269,14 @@ struct RemotePlayView: View {
             GCController.stopWirelessControllerDiscovery()
             UIApplication.shared.isIdleTimerDisabled = false
             session.stop()
+        }
+        .onChange(of: session.state) { _, state in
+            switch state {
+            case .connecting: VelmiraLiveDiagnostics.shared.record("STREAM", "جارٍ الاتصال بجهاز PS5")
+            case .connected: VelmiraLiveDiagnostics.shared.record("STREAM", "الاتصال بجهاز PS5 ناجح")
+            case .loginPINRequired: VelmiraLiveDiagnostics.shared.record("STREAM", "مطلوب رمز دخول الجهاز")
+            case .ended: VelmiraLiveDiagnostics.shared.record("STREAM", "انتهى اتصال PS5")
+            }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
@@ -337,6 +366,15 @@ struct RemotePlayView: View {
                 }
                 .accessibilityLabel("أدوات البث والإعدادات")
 
+                Button {
+                    withAnimation(.easeInOut(duration: 0.17)) { showingQuickSettings.toggle() }
+                } label: {
+                    Label("سريع", systemImage: "slider.horizontal.3")
+                        .padding(.horizontal, 11)
+                        .frame(minHeight: 42)
+                        .background(TPPlayTheme.accent.opacity(0.8), in: Capsule())
+                }
+                .accessibilityLabel("إظهار لوحة إعدادات البث السريعة")
                 Button {
                     openStreamSettings()
                 } label: {
@@ -451,6 +489,7 @@ struct RemotePlayView: View {
     private func openStreamSettings() {
         guard !showingStreamSettings else { return }
         showsSessionMenu = false
+        showingQuickSettings = false
         session.suspendAssistance(preserveActivation: true)
         showingStreamSettings = true
     }
@@ -883,6 +922,8 @@ private struct StreamPresetNameDialog: View {
 /// remains connected. Controller assistance is suspended by the presenting
 /// view and restored on dismissal; no reconnect or logout is triggered here.
 private struct InStreamSettingsCenter: View {
+    @ObservedObject var session: RemotePlaySession
+    @ObservedObject private var diagnostics = VelmiraLiveDiagnostics.shared
     @ObservedObject private var assistance = AssistanceState.shared
     @ObservedObject private var ai = AIAnalysisState.shared
     @ObservedObject private var layouts = TouchLayoutStore.shared
@@ -892,6 +933,8 @@ private struct InStreamSettingsCenter: View {
     let onCalibrate: () -> Void
     let onScanTeams: () -> Void
     @State private var notice = ""
+    @State private var exportLog: VelmiraDiagnosticLogDocument?
+    @State private var showingLogExporter = false
 
     var body: some View {
         NavigationStack {
@@ -937,6 +980,34 @@ private struct InStreamSettingsCenter: View {
                         if !notice.isEmpty {
                             Text(notice).font(.footnote).foregroundStyle(.cyan)
                         }
+                    }
+                    VelmiraSection("الاستعادة ومراقبة الأداء") {
+                        Text("بث PS5: \(Int(session.measuredFPS)) FPS — الشبكة: \(session.packetLoss.map { String(format: "%.1f%%", $0) } ?? "لا توجد قياسات")")
+                        Text("YOLO: \(Int(diagnostics.measuredYOLOms))ms — الحد الذكي: \(String(format: "%.1f", diagnostics.analysisRate)) تحليل/ث — إطارات مؤجلة: \(diagnostics.droppedBusy)")
+                        Text("حرارة الجهاز: \(diagnostics.thermalDescription)")
+                        Text("قراءة الأسماء: \(diagnostics.lastOCRStatus)")
+                        Text("الأرقام تقريبية ولا تمثل زمن استجابة يد التحكم.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Button("حفظ نقطة استعادة قبل التعديل") {
+                            do {
+                                try VelmiraSettingsCheckpoint.save()
+                                notice = "حُفظت نقطة استعادة لجميع الإعدادات."
+                            } catch { notice = error.localizedDescription }
+                        }
+                        Button("التراجع إلى نقطة الاستعادة", role: .destructive) {
+                            do {
+                                try VelmiraSettingsCheckpoint.restore()
+                                notice = "تمت استعادة الإعدادات والمساعدة متوقفة."
+                                VelmiraLiveDiagnostics.shared.record("SETTINGS", "استعادة الإعدادات السابقة")
+                            } catch { notice = error.localizedDescription }
+                        }.disabled(!VelmiraSettingsCheckpoint.exists)
+                        Button("تصدير سجل الأخطاء والأداء") {
+                            exportLog = VelmiraDiagnosticLogDocument(text: diagnostics.exportText)
+                            showingLogExporter = true
+                        }
+                        Button("مسح سجل الأخطاء", role: .destructive) { diagnostics.clear() }
+                        Text("السجل محلي، لا يسجل الأسماء أو صور اللعبة أو بيانات PSN.")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                     VelmiraSection("أقسام الإعدادات الكاملة") {
                         link("التحكم والتتبع — جميع الأشرطة والماكروز والارتداد",
@@ -992,6 +1063,11 @@ private struct InStreamSettingsCenter: View {
                 }
             }
         }
+        .fileExporter(isPresented: $showingLogExporter,
+                      document: exportLog, contentType: .plainText,
+                      defaultFilename: "Velmira-Local-Diagnostics") { outcome in
+            if case .failure(let error) = outcome { notice = error.localizedDescription }
+        }
         .environment(\.layoutDirection, .rightToLeft)
     }
 
@@ -1026,5 +1102,69 @@ private struct InStreamSettingsCenter: View {
         .buttonStyle(.plain)
         .padding(.horizontal, 9)
         .background(TPPlayTheme.surface, in: RoundedRectangle(cornerRadius: 10))
+    }
+}
+
+
+/// Non-modal overlay: game frames remain visible behind the compact controls.
+private struct InStreamQuickControls: View {
+    @ObservedObject var session: RemotePlaySession
+    @ObservedObject private var ai = AIAnalysisState.shared
+    @ObservedObject private var diagnostics = VelmiraLiveDiagnostics.shared
+    @ObservedObject private var games = GameProfiles.shared
+    @State private var profileName = "MW3"
+    @State private var feedback = ""
+    let onFullSettings: () -> Void
+    let onClose: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack {
+                Label("لوحة البث السريعة", systemImage: "slider.horizontal.3").font(.subheadline.bold())
+                Spacer()
+                Button(action: onClose) { Image(systemName: "xmark.circle.fill").font(.title3) }
+                    .accessibilityLabel("إغلاق إعدادات البث السريعة")
+            }
+            Toggle("تحليل YOLO", isOn: $ai.enabled)
+            Toggle("إظهار أسماء اللاعبين والمربعات", isOn: $ai.showPlayerBoxes)
+            HStack { Text("ثقة الكشف"); Spacer(); Text("\(Int(ai.threshold * 100))٪").monospacedDigit() }
+                .font(.caption)
+            Slider(value: $ai.threshold, in: 0.20...0.95, step: 0.05)
+            HStack(spacing: 7) {
+                Text("FPS: \(Int(session.measuredFPS))")
+                Text("AI: \(Int(diagnostics.measuredYOLOms))ms")
+                Text("الحرارة: \(diagnostics.thermalDescription)").lineLimit(1)
+            }.font(.caption2).foregroundStyle(.secondary)
+            Menu {
+                ForEach(games.profiles) { profile in
+                    Button(profile.name) {
+                        games.apply(profile)
+                        feedback = "تم تحميل \(profile.name) مؤقتاً، افتح ملف الألعاب لحفظه."
+                    }
+                }
+                if games.profiles.isEmpty { Text("لا توجد ملفات محفوظة") }
+            } label: {
+                Label("اختيار ملف لعبة محفوظ", systemImage: "square.stack")
+            }
+            HStack {
+                TextField("اسم ملف اللعبة", text: $profileName).textFieldStyle(.roundedBorder)
+                Button("حفظ") { games.save(profileName); feedback = games.message }
+                    .buttonStyle(.bordered)
+            }
+            HStack {
+                Button("حفظ التعديلات") {
+                    let a = ai.saveSettings()
+                    let b = AssistanceState.shared.saveSettings()
+                    feedback = a && b ? "تم الحفظ" : "فشل الحفظ"
+                }.buttonStyle(.bordered)
+                Button("كل الإعدادات", action: onFullSettings)
+                    .buttonStyle(.borderedProminent)
+            }
+            if !feedback.isEmpty { Text(feedback).font(.caption2).lineLimit(2) }
+        }
+        .font(.caption).foregroundStyle(.white).padding(12)
+        .background(.black.opacity(0.93), in: RoundedRectangle(cornerRadius: 15))
+        .overlay(RoundedRectangle(cornerRadius: 15)
+                    .stroke(TPPlayTheme.accent.opacity(0.65), lineWidth: 1))
     }
 }
