@@ -945,6 +945,8 @@ private struct InStreamSettingsCenter: View {
                         .foregroundStyle(.secondary)
                     VelmiraSection("التحكم السريع أثناء البث") {
                         Toggle("تشغيل تحليل YOLOv8n", isOn: $ai.enabled)
+                        Toggle("حماية فريقي — الخصوم المؤكدون فقط", isOn: $ai.protectTeammates)
+                        Text("مع الحماية لن يتتبع أي لاعب لا يقرأ اسمه ويتأكد أنه من الخصوم.").font(.caption).foregroundStyle(.orange)
                         Toggle("إظهار مربعات اللاعبين والأسماء", isOn: $ai.showPlayerBoxes)
                         Toggle("تأكيد الاكتشاف قبل عرض النتيجة", isOn: $ai.precisionMode)
                         Toggle("إظهار موضع الجسم المختار", isOn: $ai.adaptiveBodyMarker)
@@ -1126,6 +1128,8 @@ private struct InStreamQuickControls: View {
                     .accessibilityLabel("إغلاق إعدادات البث السريعة")
             }
             Toggle("تحليل YOLO", isOn: $ai.enabled)
+            Toggle("حماية فريقي", isOn: $ai.protectTeammates)
+                .accessibilityHint("التتبع للخصم المؤكد فقط؛ عند غياب اسم الخصم يتوقف التتبع")
             Toggle("إظهار أسماء اللاعبين والمربعات", isOn: $ai.showPlayerBoxes)
             HStack { Text("ثقة الكشف"); Spacer(); Text("\(Int(ai.threshold * 100))٪").monospacedDigit() }
                 .font(.caption)
