@@ -1,5 +1,11 @@
 import Foundation
 
+enum RosterSide: String, CaseIterable, Identifiable, Codable, Sendable {
+    case unknown = "غير مصنف", friendly = "فريقي", opponent = "الخصوم"
+    var id: String { rawValue }
+}
+
+
 struct HumanDetection: Identifiable, Sendable {
     let id: UUID
     let box: CGRect
