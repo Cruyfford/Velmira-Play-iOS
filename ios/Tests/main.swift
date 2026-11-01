@@ -105,6 +105,28 @@ persistence.reset()
 require(persistence.update([markA], at: 30).isEmpty, "Reset removes prior state")
 print("StableDetectionFilter verification checks passed")
 
+// Player rectangle rendering does not depend on confirmed enemy names, and
+// brief visual holding cannot ever authorize an automatic tracking target.
+var overlayHold = PlayerOverlayBoxHold()
+let overlayRect = CGRect(x: 0.32, y: 0.24, width: 0.18, height: 0.45)
+require(overlayHold.accept([overlayRect], capturedAt: 14) == [overlayRect],
+        "An unclassified YOLO player is visible immediately")
+require(overlayHold.accept([], capturedAt: 14.22) == [overlayRect],
+        "One missing YOLO frame does not blink the overlay")
+require(overlayHold.accept([], capturedAt: 14.46).isEmpty,
+        "Old visual rectangles expire after a brief gap")
+_ = overlayHold.accept([overlayRect], capturedAt: 15)
+require(overlayHold.accept([], capturedAt: 15.10, hasError: true).isEmpty,
+        "Model load failure cannot leave a ghost rectangle")
+require(overlayHold.accept([], capturedAt: 15.12).isEmpty,
+        "Failed model remains visually empty")
+let emptySafeReport = HumanAnalysis(detections: [], imageSize: CGSize(width: 1920, height: 1080),
+                                    capturedAt: 16, milliseconds: 5, error: nil,
+                                    visiblePlayerBoxes: [overlayRect])
+require(TeamTargetSafety.trackingSample(from: emptySafeReport, names: [], roster: [],
+                                        now: 16.1).boxes.isEmpty,
+        "Visible unknown boxes must never become automatic targets")
+
 // Hybrid fusion: color alone or a person alone must never steer in hybrid mode.
 let body = CGRect(x: 0.40, y: 0.30, width: 0.20, height: 0.35)
 let nameplate = CGRect(x: 0.44, y: 0.68, width: 0.12, height: 0.025)
