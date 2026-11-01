@@ -10,11 +10,13 @@ struct RemotePlayView: View {
     @ObservedObject private var aiAnalysis = AIAnalysisState.shared
     @ObservedObject private var assistance = AssistanceState.shared
     @ObservedObject private var weaponStore = MW3WeaponStore.shared
+    @ObservedObject private var roster = MatchRoster.shared
     @State private var showingWeaponLibrary = false
     @State private var showMetrics = UserDefaults.standard.object(forKey: "velmira.showMetrics.compact.v2") as? Bool ?? false
     @State private var savedStreamNotice = ""
     @State private var calibrationShot: CalibrationShot?
     @State private var playerNameShot: CalibrationShot?
+    @State private var showingRoster = false
     @State private var calibrationError = false
     @State private var loginPIN = ""
     @State private var hasExternalController = false
@@ -141,6 +143,19 @@ struct RemotePlayView: View {
             }
             .preferredColorScheme(.dark)
         }
+        .sheet(isPresented: $showingRoster, onDismiss: {
+            if scenePhase == .active { session.resumeAssistance() }
+        }) {
+            NavigationStack {
+                MatchRosterView()
+                    .toolbar {
+                        ToolbarItem(placement: .topBarLeading) {
+                            Button("إغلاق") { showingRoster = false }
+                        }
+                    }
+            }
+            .preferredColorScheme(.dark)
+        }
         .sheet(item: $calibrationShot, onDismiss: {
             if scenePhase == .active { session.resumeAssistance() }
         }) { shot in
@@ -206,7 +221,7 @@ struct RemotePlayView: View {
             if phase == .active {
                 TPPlayOrientation.set(.landscape)
                 AIFrameAnalyzer.shared.setPaused(false)
-                if calibrationShot == nil && playerNameShot == nil { session.resumeAssistance() }
+                if calibrationShot == nil && playerNameShot == nil && !showingRoster { session.resumeAssistance() }
                 UIApplication.shared.isIdleTimerDisabled = true
                 if wasBackgrounded {
                     wasBackgrounded = false
@@ -237,6 +252,9 @@ struct RemotePlayView: View {
                 .accessibilityLabel("الخروج من البث والعودة إلى الأجهزة")
 
                 Menu {
+                    Button("قراءة الفريقين من لوحة النتائج", systemImage: "person.2.text") {
+                        captureScoreboard()
+                    }
                     Button("تشغيل YOLO والتصنيف التلقائي", systemImage: "viewfinder") {
                         aiAnalysis.prepareHybridTracking()
                     }
@@ -280,6 +298,18 @@ struct RemotePlayView: View {
                         .overlay(Capsule().stroke(TPPlayTheme.accent.opacity(0.45), lineWidth: 1))
                 }
                 .accessibilityLabel("أدوات البث والإعدادات")
+
+                Button {
+                    captureScoreboard()
+                } label: {
+                    Label(roster.reading ? "قراءة..." : "قراءة الفريقين",
+                          systemImage: "person.2.text")
+                        .padding(.horizontal, 11)
+                        .frame(minHeight: 42)
+                        .background(.cyan.opacity(0.75), in: Capsule())
+                }
+                .disabled(roster.reading)
+                .accessibilityLabel("قراءة أسماء الفريقين تلقائياً من لوحة نتائج MW3")
 
                 Menu {
                     ForEach(0..<6, id: \.self) { index in
@@ -368,6 +398,20 @@ struct RemotePlayView: View {
         .padding(.horizontal, 12)
         .padding(.top, 8)
         .zIndex(10)
+    }
+
+    private func captureScoreboard() {
+        // User opens the game scoreboard before pressing the capture button.
+        // Capture the actual decoded Remote Play video, not a screenshot of
+        // this app UI. Do not turn this one-time OCR into continuous scanning.
+        guard !roster.reading else { return }
+        guard let image = session.calibrationFrames.image() else {
+            calibrationError = true
+            return
+        }
+        session.suspendAssistance(preserveActivation: true)
+        showingRoster = true
+        Task { await roster.read(image) }
     }
 
     private func openCalibrationCapture() {
