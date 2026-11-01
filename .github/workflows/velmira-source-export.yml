@@ -1,0 +1,43 @@
+name: Export Velmira Play Complete Source
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/velmira-source-export.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-package:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout complete tracked project source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          submodules: false
+          fetch-depth: 1
+
+      - name: Export project sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          # git archive exports exactly tracked files, including .github,
+          # Xcode project, native Remote Play source, tests, and .gitmodules.
+          # Third-party git submodules are fetched during a normal local build.
+          git archive --format=zip --output=dist/Velmira-Play-iOS-Source.zip HEAD
+          unzip -t dist/Velmira-Play-iOS-Source.zip | tail -1
+          printf '%s\n' 'Velmira Play source exported from:' > dist/SOURCE_COMMIT.txt
+          git rev-parse HEAD >> dist/SOURCE_COMMIT.txt
+          printf '%s\n' 'The separate private Core ML weights are included by the user in their local archive, not in this public repository.' >> dist/SOURCE_COMMIT.txt
+
+      - name: Upload source archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: Velmira-Play-iOS-Source
+          path: dist/
+          retention-days: 7
+          if-no-files-found: error
