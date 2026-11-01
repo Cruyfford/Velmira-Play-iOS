@@ -394,9 +394,15 @@ final class GameProfiles: ObservableObject {
     }
     func save(_ name: String) {
         let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !clean.isEmpty else { return }
+        guard !clean.isEmpty, clean.count <= 80 else { message = "اسم الملف يجب أن يكون بين 1 و80 حرفاً"; return }
         let ai = AIAnalysisState.shared
         let defaults = UserDefaults.standard
+        if let index = profiles.firstIndex(where: { $0.name.localizedCaseInsensitiveCompare(clean) == .orderedSame }) {
+            profiles.remove(at: index)
+        } else if profiles.count >= 40 {
+            message = "بلغت الحد الأقصى (40 ملفاً). احذف ملفاً قديماً أولاً."
+            return
+        }
         profiles.append(GameProfile(name: clean, assistance: AssistanceState.shared.configuration,
             hue: ai.colorHue, tolerance: ai.colorTolerance, colorMode: ai.colorMode,
             threshold: ai.threshold, rate: ai.rate,
