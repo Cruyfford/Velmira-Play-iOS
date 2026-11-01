@@ -455,10 +455,6 @@ struct AIAnalysisSettings: View {
     }
 }
 
-enum RosterSide: String, CaseIterable, Identifiable, Codable, Sendable {
-    case unknown = "غير مصنف", friendly = "فريقي", opponent = "الخصوم"
-    var id: String { rawValue }
-}
 struct RosterName: Identifiable, Codable {
     var id = UUID()
     var name: String
