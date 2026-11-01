@@ -68,6 +68,9 @@ struct AssistanceSettings: View {
                     Text("YOLOv8n الجديد بدقة 640 يعمل محلياً دون اختيار الأسماء أو الألوان. وقد يخطئ في تصنيف اللاعبين، ولم يُختبر على PS5 بعد.").font(.footnote)
                 }
                 VelmiraSection("التتبّع") {
+                    Toggle("حماية فريقي — التتبع على خصم مؤكّد فقط", isOn: $vision.protectTeammates)
+                    Text("تفعيل الحماية يمنع أي تحريك نحو الحلفاء أو اللاعبين المجهولين. لا يحدث قفل تلقائي دون تطابق اسم الخصم فوق رأسه مع قائمة الخصوم الحالية؛ القراءة غير المؤكدة تعني عدم التتبع.")
+                        .font(.footnote).foregroundStyle(.orange)
                     Button("تشغيل نموذج MW3 YOLOv8n المدرّب") {
                         model.emergencyStop(reason: "فعّل المساعدة بعد ضبط نموذج YOLOv8n")
                         vision.prepareHybridTracking()
@@ -132,7 +135,7 @@ struct AssistanceSettings: View {
                     .buttonStyle(.borderedProminent)
                     Text("يحافظ على هوية الهدف المؤكد حتى لو تحرك خارج نطاق الالتقاط الأولي، ويتحول إلى أقرب هدف مؤكّد من موقعه السابق عند فقده. اختفاء الهدف لا يثبت موته؛ لا يتحرك التصويب إلى هدف غير مرئي. تحليل 12 مرة/ثانية معدل مطلوب وليس أداءً مضمونًا.")
                         .font(.footnote)
-                    Text("لا يشترط البرنامج ظهور علامة HUD الملونة؛ يعتمد على فئة Enemy التي تعلمها YOLOv8n.")
+                    Text("مع حماية الفريق المفعّلة، فئة Enemy وحدها لا تكفي؛ يلزم تطابق اسم الخصم المقروء فوق رأسه.")
                         .font(.footnote)
                     Toggle("تحريك التصويب نحو الهدف", isOn: $model.configuration.tracking)
                     Toggle("الاستمرار في قفل الهدف بدون L2",
