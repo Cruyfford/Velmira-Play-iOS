@@ -1012,7 +1012,9 @@ private struct InStreamSettingsCenter: View {
         _ title: String, icon: String,
         @ViewBuilder destination: @escaping () -> Destination
     ) -> some View {
-        NavigationLink(destination: destination) {
+        NavigationLink {
+            destination()
+        } label: {
             HStack(spacing: 10) {
                 Image(systemName: icon).frame(width: 23)
                 Text(title).font(.subheadline).multilineTextAlignment(.leading)
