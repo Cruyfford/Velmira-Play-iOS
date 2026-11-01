@@ -412,3 +412,15 @@ require(NameplateRosterAssociation.matchingBox(bodyFriendly, bodyFriendly),
 require(!NameplateRosterAssociation.matchingBox(bodyFriendly, bodyEnemy),
         "On-screen name must not drift to another YOLO player")
 print("Nameplate-roster association checks passed")
+
+require(AdaptiveAnalysisBudget.limit(requested: 24, averageInferenceMS: 0, thermalLevel: .nominal) == 24,
+        "Requested 24 analysis FPS retained on cool device")
+require(AdaptiveAnalysisBudget.limit(requested: 24, averageInferenceMS: 100, thermalLevel: .nominal) <= 7.01,
+        "Heavy ML inference throttles frame scheduling")
+require(AdaptiveAnalysisBudget.limit(requested: 24, averageInferenceMS: 40, thermalLevel: .serious) <= 3,
+        "Serious thermal pressure caps neural processing")
+require(AdaptiveAnalysisBudget.limit(requested: 24, averageInferenceMS: 40, thermalLevel: .critical) == 1,
+        "Critical thermal pressure forces minimal rate")
+require(AdaptiveAnalysisBudget.limit(requested: .nan, averageInferenceMS: 100, thermalLevel: .nominal) == 1,
+        "Invalid scheduling input cannot divide by zero")
+print("Adaptive analysis thermal tests passed")
