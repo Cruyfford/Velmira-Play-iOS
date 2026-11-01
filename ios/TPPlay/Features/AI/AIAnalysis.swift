@@ -22,6 +22,7 @@ final class AIAnalysisState: ObservableObject {
     @Published var threshold = 0.30 { didSet { configure() } }
     @Published var rate = 12.0 { didSet { configure() } }
     @Published private(set) var result: HumanAnalysis?
+    @Published private(set) var liveNameMatches: [LiveNameMatch] = []
     private struct SavedAISettings: Codable {
         var colorMode: Bool
         var hybridMode: Bool
@@ -76,6 +77,7 @@ final class AIAnalysisState: ObservableObject {
             adaptiveBodyMarker: adaptiveBodyMarker,
             color: ColorTrackingConfiguration(hue: colorHue, tolerance: colorTolerance))
         result = nil
+        liveNameMatches = []
         persistence.reset()
     }
     /// Configure image analysis only; activation of controller assistance stays manual.
@@ -94,6 +96,7 @@ final class AIAnalysisState: ObservableObject {
         guard precisionMode || hybrid else { result = value; return }
         if value.error != nil {
             persistence.reset()
+            liveNameMatches = []
             result = value
             return
         }
@@ -114,8 +117,16 @@ final class AIAnalysisState: ObservableObject {
                                milliseconds: value.milliseconds, error: value.error,
                                visiblePlayerBoxes: value.visiblePlayerBoxes)
     }
+    func acceptNameMatches(_ names: [LiveNameMatch], sampledAt: TimeInterval) {
+        guard enabled, let result, result.error == nil,
+              result.capturedAt >= sampledAt - 0.10,
+              result.capturedAt - sampledAt <= 0.90 else { return }
+        // OCR only annotates boxes belonging to recent observed video.
+        liveNameMatches = names
+    }
     func clear() {
         result = nil
+        liveNameMatches = []
         persistence.reset()
         AIFrameAnalyzer.shared.invalidate()
     }
@@ -123,6 +134,69 @@ final class AIAnalysisState: ObservableObject {
 private final class RetainedVideoFrame: @unchecked Sendable {
     let buffer: CVPixelBuffer
     init(_ buffer: CVPixelBuffer) { self.buffer = buffer }
+}
+
+/// Separate, throttled text recognition for *floating gamer tags*. Never
+/// alters controller input. YOLO remains the sole body detection system.
+private final class OnScreenNameplateOCR: @unchecked Sendable {
+    static let shared = OnScreenNameplateOCR()
+    private let queue = DispatchQueue(label: "app.velmira.nameplate.ocr", qos: .utility)
+    private let lock = NSLock()
+    private var busy = false
+    private var lastScan: TimeInterval = 0
+
+    func submit(_ source: CVPixelBuffer,
+                bodies: [CGRect], roster: [KnownRosterPlayer],
+                capturedAt: TimeInterval) {
+        guard !bodies.isEmpty, !roster.isEmpty else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        lock.lock()
+        guard !busy, now - lastScan >= 0.85,
+              ProcessInfo.processInfo.thermalState != .critical else {
+            lock.unlock()
+            return
+        }
+        busy = true
+        lastScan = now
+        lock.unlock()
+        let frame = RetainedVideoFrame(source)
+        queue.async { [self, frame, bodies, roster] in
+            defer { lock.lock(); busy = false; lock.unlock() }
+            let request = VNRecognizeTextRequest()
+            request.recognitionLevel = .accurate
+            request.usesLanguageCorrection = false
+            request.recognitionLanguages = ["en-US"]
+            request.minimumTextHeight = 0.004
+            do {
+                try VNImageRequestHandler(cvPixelBuffer: frame.buffer, options: [:]).perform([request])
+                let items: [NameplateTextObservation] = (request.results ?? []).compactMap {
+                    observation in
+                    guard let text = observation.topCandidates(1).first,
+                          text.confidence >= 0.56 else { return nil }
+                    return NameplateTextObservation(text: text.string,
+                                                    box: observation.boundingBox,
+                                                    confidence: text.confidence)
+                }
+                // Never attach a scoreboard row to a body visible through the
+                // transparent leaderboard panel.
+                let hasScoreboard = items.contains {
+                    let label = $0.text.uppercased()
+                    return label.contains("SCOREBOARD")
+                }
+                let matches = hasScoreboard ? [] :
+                    NameplateRosterAssociation.match(
+                        texts: items, bodies: bodies,
+                        players: roster, capturedAt: capturedAt)
+                Task { @MainActor in
+                    AIAnalysisState.shared.acceptNameMatches(matches, sampledAt: capturedAt)
+                }
+            } catch {
+                Task { @MainActor in
+                    AIAnalysisState.shared.acceptNameMatches([], sampledAt: capturedAt)
+                }
+            }
+        }
+    }
 }
 
 final class AIFrameAnalyzer: @unchecked Sendable {
@@ -199,6 +273,16 @@ final class AIFrameAnalyzer: @unchecked Sendable {
             Task { @MainActor in
                 guard self.current(token) else { return }
                 AIAnalysisState.shared.accept(report)
+                if report.error == nil && !report.visiblePlayerBoxes.isEmpty {
+                    let roster = MatchRoster.shared.names
+                        .filter { $0.side != .unknown }
+                        .map { KnownRosterPlayer(name: $0.name, side: $0.side) }
+                    if !roster.isEmpty {
+                        OnScreenNameplateOCR.shared.submit(
+                            frame.buffer, bodies: report.visiblePlayerBoxes,
+                            roster: roster, capturedAt: report.capturedAt)
+                    }
+                }
             }
         }
     }
@@ -228,10 +312,17 @@ struct AIAnalysisOverlay: View {
                     if model.showPlayerBoxes {
                         ForEach(result.visiblePlayerBoxes.indices, id: \.self) { index in
                             let body = result.visiblePlayerBoxes[index]
-                            Rectangle().stroke(Color.green, lineWidth: 2.5)
+                            let named = model.liveNameMatches.first {
+                                ProcessInfo.processInfo.systemUptime - $0.capturedAt <= 1.30 &&
+                                NameplateRosterAssociation.matchingBox(body, $0.body)
+                            }
+                            let boxColor: Color = named?.side == .friendly
+                                ? .cyan : (named?.side == .opponent ? .orange : .green)
+                            Rectangle().stroke(boxColor, lineWidth: 2.5)
                                 .frame(width: body.width * width, height: body.height * height)
                                 .overlay(alignment: .topLeading) {
-                                    Text(PlayerVisualCues.proximity(for: body))
+                                    Text(named.map { "\($0.name) • \($0.side.rawValue)" } ??
+                                         PlayerVisualCues.proximity(for: body))
                                         .font(.system(size: 10, weight: .bold))
                                         .foregroundStyle(Color.white)
                                         .padding(.horizontal, 5)
