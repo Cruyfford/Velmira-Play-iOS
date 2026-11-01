@@ -413,6 +413,65 @@ require(!NameplateRosterAssociation.matchingBox(bodyFriendly, bodyEnemy),
         "On-screen name must not drift to another YOLO player")
 print("Nameplate-roster association checks passed")
 
+// STRICT TEAM SAFETY: the controller input must NEVER use raw YOLO enemy
+// predictions as permission to steer toward a teammate or unknown player.
+let safeFriendly = HumanDetection(id: UUID(), box: bodyFriendly, confidence: 0.95,
+                                  humanSupported: true, matchedPersonBox: bodyFriendly)
+let safeEnemy = HumanDetection(id: UUID(), box: bodyEnemy, confidence: 0.95,
+                               humanSupported: true, matchedPersonBox: bodyEnemy)
+let safetyReport = HumanAnalysis(detections: [safeFriendly, safeEnemy],
+                                  imageSize: CGSize(width: 1920, height: 1080),
+                                  capturedAt: 1000, milliseconds: 20, error: nil)
+func safeInput(_ report: HumanAnalysis, _ labels: [LiveNameMatch],
+               roster: [KnownRosterPlayer] = knownRoster,
+               now: Double = 1000.04, strict: Bool = true) -> TrackingSample {
+    TeamTargetSafety.trackingSample(from: report, names: labels, roster: roster,
+                                   now: now, requireConfirmedOpponent: strict)
+}
+require(safeInput(safetyReport, []).boxes.isEmpty,
+        "A YOLO 'Enemy' prediction is not proof of team identity")
+let onlyFriend = safeInput(safetyReport, matchedNames.filter { $0.side == .friendly })
+require(onlyFriend.boxes.isEmpty,
+        "Teammate is never automatically followed even if YOLO detects them")
+let confirmedEnemy = safeInput(safetyReport, matchedNames)
+require(confirmedEnemy.boxes == [bodyEnemy],
+        "Only the verified opponent box reaches the controller path")
+require(confirmedEnemy.targetIDs == [safeEnemy.id],
+        "Safe tracking keeps stable YOLO identity for only the opponent")
+let friendKnownButOpponentMissing = safeInput(safetyReport, matchedNames.filter { $0.side == .friendly },
+                                              strict: false)
+require(friendKnownButOpponentMissing.boxes == [bodyEnemy],
+        "Manual relaxed mode still rejects known teammates")
+let changedRoster = safeInput(safetyReport, matchedNames,
+                               roster: [KnownRosterPlayer(name: "CRUYFFORD#12345", side: .opponent)])
+require(changedRoster.boxes.isEmpty,
+        "A changed scoreboard invalidates old friendly/enemy assignments")
+let twoLabelsOneBody = [
+    LiveNameMatch(name: "CRUYFFORD#12345", side: .friendly, body: bodyEnemy, capturedAt: 1000),
+    LiveNameMatch(name: "[RED]Danger#99887", side: .opponent, body: bodyEnemy, capturedAt: 1000)
+]
+require(safeInput(safetyReport, twoLabelsOneBody).boxes.isEmpty,
+        "Conflicting nameplates over the same body cannot authorize tracking")
+let oldConfirmedLabel = [LiveNameMatch(name: "[RED]Danger#99887", side: .opponent,
+                                       body: bodyEnemy, capturedAt: 997)]
+require(safeInput(safetyReport, oldConfirmedLabel).boxes.isEmpty,
+        "Expired nameplate cannot authorize a fresh YOLO frame")
+let ambiguousDoubleBody = HumanAnalysis(
+    detections: [
+        HumanDetection(id: UUID(), box: bodyEnemy, confidence: 0.9,
+                       humanSupported: true, matchedPersonBox: bodyEnemy),
+        HumanDetection(id: UUID(), box: bodyEnemy.offsetBy(dx: 0.007, dy: 0),
+                       confidence: 0.84, humanSupported: true,
+                       matchedPersonBox: bodyEnemy.offsetBy(dx: 0.007, dy: 0))
+    ], imageSize: CGSize(width: 1920, height: 1080),
+    capturedAt: 1000, milliseconds: 20, error: nil)
+require(safeInput(ambiguousDoubleBody, matchedNames.filter { $0.side == .opponent }).boxes.isEmpty,
+        "Duplicate/overlapping YOLO people cannot acquire one nameplate")
+require(safeInput(safetyReport, matchedNames, now: 1001.0).boxes.isEmpty,
+        "No movement on expired YOLO frame even if labels exist")
+print("Teammate exclusion and strict opponent-only tracking tests passed")
+
+
 require(AdaptiveAnalysisBudget.limit(requested: 24, averageInferenceMS: 0, thermalLevel: .nominal) == 24,
         "Requested 24 analysis FPS retained on cool device")
 require(AdaptiveAnalysisBudget.limit(requested: 24, averageInferenceMS: 100, thermalLevel: .nominal) <= 7.01,
