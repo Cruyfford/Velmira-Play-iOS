@@ -6,6 +6,50 @@ import CoreImage
 import Vision
 import ImageIO
 
+/// Bounded, on-device diagnostics. Never logs gamertags, screenshots or PSN credentials.
+@MainActor
+final class VelmiraLiveDiagnostics: ObservableObject {
+    static let shared = VelmiraLiveDiagnostics()
+    @Published private(set) var lines: [String] = []
+    @Published private(set) var measuredYOLOms = 0.0
+    @Published private(set) var analysisRate = 0.0
+    @Published private(set) var droppedBusy = 0
+    @Published private(set) var thermalDescription = "عادي"
+    @Published private(set) var lastOCRStatus = "بانتظار قراءة الأسماء"
+    private let formatter = ISO8601DateFormatter()
+    private var lastLoggedErrorAt: TimeInterval = 0
+    func record(_ kind: String, _ detail: String) {
+        lines.append("\(formatter.string(from: Date())) | \(kind) | \(String(detail.prefix(160)).replacingOccurrences(of: "\n", with: " "))")
+        if lines.count > 180 { lines.removeFirst(lines.count - 180) }
+    }
+    func updateInference(milliseconds: Double, limit: Double, dropped: Int,
+                         temperature: ProcessInfo.ThermalState, error: String?) {
+        if milliseconds.isFinite && milliseconds > 0 { measuredYOLOms = milliseconds }
+        analysisRate = limit
+        droppedBusy = dropped
+        switch temperature {
+        case .nominal: thermalDescription = "عادي"
+        case .fair: thermalDescription = "دافئ"
+        case .serious: thermalDescription = "مرتفع — خفض الأداء"
+        case .critical: thermalDescription = "حرج — تقليل التحليل"
+        @unknown default: thermalDescription = "غير معروف"
+        }
+        if error != nil, ProcessInfo.processInfo.systemUptime - lastLoggedErrorAt > 3 {
+            record("YOLO", "تعذر تنفيذ التحليل، افحص سجل النظام")
+            lastLoggedErrorAt = ProcessInfo.processInfo.systemUptime
+        }
+    }
+    func updateOCR(_ status: String) { lastOCRStatus = status }
+    func clear() { lines = []; record("LOG", "تم مسح سجل التشخيص") }
+    var exportText: String {
+        (["Velmira Play local diagnostics",
+          "Generated: \(formatter.string(from: Date()))",
+          "No gamer tags, video frames, PSN credentials or connection addresses stored.",
+          "Thermal: \(thermalDescription); inference ms: \(measuredYOLOms); analysis cap: \(analysisRate); dropped busy: \(droppedBusy)",
+          ""] + lines).joined(separator: "\n")
+    }
+}
+
 /// Analysis is independent from controller output; assistance consumes fresh results only.
 @MainActor
 final class AIAnalysisState: ObservableObject {
@@ -23,6 +67,7 @@ final class AIAnalysisState: ObservableObject {
     @Published var rate = 12.0 { didSet { configure() } }
     @Published private(set) var result: HumanAnalysis?
     @Published private(set) var liveNameMatches: [LiveNameMatch] = []
+    private var pendingNameMatches: [String: (sample: LiveNameMatch, hits: Int)] = [:]
     private struct SavedAISettings: Codable {
         var colorMode: Bool
         var hybridMode: Bool
@@ -78,6 +123,7 @@ final class AIAnalysisState: ObservableObject {
             color: ColorTrackingConfiguration(hue: colorHue, tolerance: colorTolerance))
         result = nil
         liveNameMatches = []
+        pendingNameMatches.removeAll()
         persistence.reset()
     }
     /// Configure image analysis only; activation of controller assistance stays manual.
@@ -97,6 +143,7 @@ final class AIAnalysisState: ObservableObject {
         if value.error != nil {
             persistence.reset()
             liveNameMatches = []
+            pendingNameMatches.removeAll()
             result = value
             return
         }
@@ -121,12 +168,32 @@ final class AIAnalysisState: ObservableObject {
         guard enabled, let result, result.error == nil,
               result.capturedAt >= sampledAt - 0.10,
               result.capturedAt - sampledAt <= 0.90 else { return }
-        // OCR only annotates boxes belonging to recent observed video.
-        liveNameMatches = names
+        // Only show names after two consistent scans of the same player body.
+        pendingNameMatches = pendingNameMatches.filter {
+            sampledAt - $0.value.sample.capturedAt <= 2.2
+        }
+        var verified: [LiveNameMatch] = []
+        for candidate in names {
+            let key = candidate.name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            if let prior = pendingNameMatches[key],
+               prior.sample.side == candidate.side,
+               sampledAt > prior.sample.capturedAt,
+               sampledAt - prior.sample.capturedAt <= 2.2,
+               NameplateRosterAssociation.matchingBox(prior.sample.body, candidate.body) {
+                let hits = min(5, prior.hits + 1)
+                pendingNameMatches[key] = (sample: candidate, hits: hits)
+                if hits >= 2 { verified.append(candidate) }
+            } else {
+                pendingNameMatches[key] = (sample: candidate, hits: 1)
+            }
+        }
+        liveNameMatches = verified
+        VelmiraLiveDiagnostics.shared.updateOCR("تم تأكيد \(verified.count) من تسميات اللاعبين")
     }
     func clear() {
         result = nil
         liveNameMatches = []
+        pendingNameMatches.removeAll()
         persistence.reset()
         AIFrameAnalyzer.shared.invalidate()
     }
@@ -151,8 +218,9 @@ private final class OnScreenNameplateOCR: @unchecked Sendable {
         guard !bodies.isEmpty, !roster.isEmpty else { return }
         let now = ProcessInfo.processInfo.systemUptime
         lock.lock()
-        guard !busy, now - lastScan >= 0.85,
-              ProcessInfo.processInfo.thermalState != .critical else {
+        let heat = ProcessInfo.processInfo.thermalState
+        let spacing = heat == .serious ? 2.0 : (heat == .fair ? 1.15 : 0.85)
+        guard !busy, now - lastScan >= spacing, heat != .critical else {
             lock.unlock()
             return
         }
@@ -214,6 +282,10 @@ final class AIFrameAnalyzer: @unchecked Sendable {
     private var adaptiveBodyMarker = true
     private var color = ColorTrackingConfiguration()
     private var previousTime: TimeInterval = 0
+    private var averagedMS = 0.0
+    private var droppedBusyCount = 0
+    private var lastTelemetryTime: TimeInterval = 0
+    private var lastThermal: ProcessInfo.ThermalState = .nominal
     func configure(enabled: Bool, threshold: Float, rate: Double, colorMode: Bool,
                    hybridMode: Bool, adaptiveBodyMarker: Bool,
                    color: ColorTrackingConfiguration) {
@@ -237,8 +309,12 @@ final class AIFrameAnalyzer: @unchecked Sendable {
         let now = ProcessInfo.processInfo.systemUptime
         let thermal = ProcessInfo.processInfo.thermalState
         lock.lock()
-        let effectiveRate = (thermal == .serious || thermal == .critical) ? min(rate, 2) : rate
-        guard enabled && !paused && !busy && now - previousTime >= 1 / effectiveRate else { lock.unlock(); return }
+        let effectiveRate = AdaptiveAnalysisBudget.limit(
+            requested: rate, averageInferenceMS: averagedMS,
+            thermalLevel: AdaptiveAnalysisBudget.level(thermal))
+        guard enabled && !paused else { lock.unlock(); return }
+        if busy { droppedBusyCount += 1; lock.unlock(); return }
+        guard now - previousTime >= 1 / effectiveRate else { lock.unlock(); return }
         busy = true; previousTime = now
         let token = generation; let minimum = threshold
         lock.unlock()
@@ -270,8 +346,22 @@ final class AIFrameAnalyzer: @unchecked Sendable {
                                        error: error.localizedDescription)
             }
             guard current(token) else { return }
+            let finishedAt = ProcessInfo.processInfo.systemUptime
+            lock.lock()
+            if report.milliseconds > 0 {
+                averagedMS = averagedMS == 0 ? report.milliseconds : averagedMS * 0.82 + report.milliseconds * 0.18
+            }
+            let shouldReport = finishedAt - lastTelemetryTime > 0.9 || thermal != lastThermal
+            if shouldReport { lastTelemetryTime = finishedAt; lastThermal = thermal }
+            let dropCount = droppedBusyCount
+            lock.unlock()
             Task { @MainActor in
                 guard self.current(token) else { return }
+                if shouldReport {
+                    VelmiraLiveDiagnostics.shared.updateInference(
+                        milliseconds: report.milliseconds, limit: effectiveRate,
+                        dropped: dropCount, temperature: thermal, error: report.error)
+                }
                 AIAnalysisState.shared.accept(report)
                 if report.error == nil && !report.visiblePlayerBoxes.isEmpty {
                     let roster = MatchRoster.shared.names
@@ -617,6 +707,7 @@ final class MatchRoster: ObservableObject {
             }.value
             guard !items.isEmpty else {
                 message = "لم أتعرف على لوحة نتائج MW3. افتح لوحة النتائج كاملة وجرّب مرة أخرى."
+                VelmiraLiveDiagnostics.shared.record("OCR", "فشل قراءة لوحة النتائج")
                 return
             }
             // Keep previous user-confirmed edits. The rest are refreshed from
@@ -638,7 +729,8 @@ final class MatchRoster: ObservableObject {
             let opponent = items.filter { $0.side == .opponent }.count
             let unknown = items.filter { $0.side == .unknown }.count
             autoStatus = "آخر قراءة: فريقي \(friendly) • الخصوم \(opponent) • غير مصنف \(unknown)"
-            message = "تم استخراج \(items.count) اسماً. راجع الفريقين قبل الاعتماد عليهما؛ OCR لا يربط الأسماء بأجسام YOLO تلقائياً."
+            message = "تم استخراج \(items.count) اسماً. تتم مطابقتها أثناء اللعب عند ظهور الاسم فوق الجسم."
+            VelmiraLiveDiagnostics.shared.record("OCR", "لوحة النتائج: \(friendly) فريقي / \(opponent) خصوم / \(unknown) غير مصنف")
         } catch {
             message = "تعذرت قراءة لوحة النتائج: \(error.localizedDescription)"
         }
@@ -702,9 +794,22 @@ private enum MW3ScoreboardOCR {
         guard cues.count >= 2 || cues.contains(where: { $0.text.uppercased().contains("SCOREBOARD") }) else {
             return []
         }
+        let headerLines = lines.filter { line in
+            let t = line.text.uppercased()
+            return t.contains("TASK FORCE") || t.contains("SPETSNAZ") ||
+                   t.contains("SPECGRU") || t.contains("RANGERS") ||
+                   t.contains("KORTAC") || t.contains("KOR TAC") ||
+                   t.contains("NAVY SEALS") || t.contains("MILITIA") ||
+                   t.contains("OPFOR") || t.contains("[6/6]") ||
+                   t.contains("(6/6)")
+        }
         var rows = lines.filter { line in
             let name = line.text.trimmingCharacters(in: .whitespacesAndNewlines)
             let uppercase = name.uppercased()
+            guard !headerLines.contains(where: { $0.text == line.text && $0.rect == line.rect }),
+                  !uppercase.contains("TASK FORCE"), !uppercase.contains("SPETSNAZ"),
+                  !uppercase.contains("SPECGRU"), !uppercase.contains("SCOREBOARD"),
+                  !uppercase.contains("RANGERS"), !uppercase.contains("KORTAC") else { return false }
             let words = uppercase.split(whereSeparator: { !$0.isLetter && !$0.isNumber })
             let allowedPunctuation = CharacterSet(charactersIn: "_-#[]. ")
             let filteredText = name.unicodeScalars.filter {
@@ -735,10 +840,24 @@ private enum MW3ScoreboardOCR {
         }.filter { $0.1 > 0 }
         let sortedSpaces = gaps.map { $0.1 }.sorted()
         let typicalSpacing = sortedSpaces.isEmpty ? 0.0 : sortedSpaces[sortedSpaces.count / 2]
-        let validSplit = gaps
+        // Distinct upper and lower team headers give a stronger split than
+        // relying on an arbitrary gap between OCR lines.
+        let headerYs = headerLines.map { $0.rect.midY }.sorted(by: >)
+        let sectionHeaderPair: (upper: CGFloat, lower: CGFloat)? = headerYs.count >= 2 &&
+            headerYs[0] - headerYs[1] >= 0.09 ?
+            (upper: headerYs[0], lower: headerYs[1]) : nil
+        let headerSplit = sectionHeaderPair.flatMap { header -> Int? in
+            guard let lastUpper = rows.lastIndex(where: {
+                $0.rect.midY < header.upper - 0.012 &&
+                $0.rect.midY > header.lower + 0.012
+            }), lastUpper >= 1, rows.count - lastUpper - 1 >= 2 else { return nil }
+            return lastUpper
+        }
+        let gapSplit = gaps
             .filter { $0.0 + 1 >= 2 && rows.count - $0.0 - 1 >= 2 }
             .filter { $0.1 >= max(0.026, typicalSpacing * 1.60) }
             .max(by: { $0.1 < $1.1 })?.0
+        let validSplit = headerSplit ?? gapSplit
         // If the two colored sections are not visually separable, leave names
         // unclassified. Never silently mark a friendly as an opponent.
         let colors: [RosterSide: String] = [
