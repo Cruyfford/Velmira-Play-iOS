@@ -62,6 +62,9 @@ final class AIAnalysisState: ObservableObject {
     @Published var protectTeammates = true
     @Published var precisionMode = true { didSet { configure() } }
     private var persistence = StableDetectionFilter()
+    // Visual-only hysteresis: missing one inference frame must not blink the
+    // on-screen rectangle. This cache is NEVER consumed by controller tracking.
+    private var overlayBoxHold = PlayerOverlayBoxHold()
     @Published var colorHue = 0.0 { didSet { configure() } }
     @Published var colorTolerance = 0.045 { didSet { configure() } }
     @Published var enabled = false { didSet { configure() } }
@@ -130,6 +133,7 @@ final class AIAnalysisState: ObservableObject {
         liveNameMatches = []
         pendingNameMatches.removeAll()
         persistence.reset()
+        overlayBoxHold.reset()
     }
     /// Configure image analysis only; activation of controller assistance stays manual.
     func prepareHybridTracking() {
@@ -143,8 +147,18 @@ final class AIAnalysisState: ObservableObject {
     }
 
     func accept(_ value: HumanAnalysis) {
+        // Drawing candidate boxes and authorizing controller targets are separate.
+        // Unknown YOLO detections remain visible (green) even in team-safe mode.
+        let displayBoxes = overlayBoxHold.accept(
+            value.visiblePlayerBoxes, capturedAt: value.capturedAt,
+            hasError: value.error != nil)
         let hybrid = true
-        guard precisionMode || hybrid else { result = value; return }
+        guard precisionMode || hybrid else {
+            var display = value
+            display.visiblePlayerBoxes = displayBoxes
+            result = display
+            return
+        }
         if value.error != nil {
             persistence.reset()
             liveNameMatches = []
@@ -167,7 +181,7 @@ final class AIAnalysisState: ObservableObject {
         result = HumanAnalysis(detections: confirmed, imageSize: value.imageSize,
                                capturedAt: value.capturedAt,
                                milliseconds: value.milliseconds, error: value.error,
-                               visiblePlayerBoxes: value.visiblePlayerBoxes)
+                               visiblePlayerBoxes: displayBoxes)
     }
     func acceptNameMatches(_ names: [LiveNameMatch], sampledAt: TimeInterval) {
         guard enabled, let result, result.error == nil,
@@ -204,6 +218,7 @@ final class AIAnalysisState: ObservableObject {
         liveNameMatches = []
         pendingNameMatches.removeAll()
         persistence.reset()
+        overlayBoxHold.reset()
         AIFrameAnalyzer.shared.invalidate()
     }
 }
@@ -394,7 +409,7 @@ struct AIAnalysisOverlay: View {
         TimelineView(.periodic(from: .now, by: 0.1)) { _ in
             GeometryReader { geometry in
                 if model.enabled, let result = model.result,
-                   ProcessInfo.processInfo.systemUptime - result.capturedAt < 0.8,
+                   ProcessInfo.processInfo.systemUptime - result.capturedAt < 1.25,
                    result.imageSize.width > 0, result.imageSize.height > 0 {
                     let scale = min(geometry.size.width / result.imageSize.width, geometry.size.height / result.imageSize.height)
                     let width = result.imageSize.width * scale
@@ -409,6 +424,25 @@ struct AIAnalysisOverlay: View {
                             .position(x: left + target.x * width, y: top + target.y * height)
                     }
                     if model.showPlayerBoxes {
+                        // Explain why no rectangle appears instead of silently
+                        // hiding all overlays when YOLO or the model cannot run.
+                        if let failure = result.error {
+                            Label("مربعات YOLO متوقفة — " + String(failure.prefix(100)),
+                                  systemImage: "exclamationmark.triangle.fill")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .padding(7)
+                                .background(Color.red.opacity(0.84), in: Capsule())
+                                .frame(maxWidth: geometry.size.width * 0.75, alignment: .leading)
+                                .position(x: geometry.size.width / 2, y: 31)
+                        } else if result.visiblePlayerBoxes.isEmpty {
+                            Text("YOLO يعمل — لا توجد أجسام مكتشفة. جرّب خفض عتبة الثقة.")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .padding(7)
+                                .background(Color.black.opacity(0.76), in: Capsule())
+                                .position(x: geometry.size.width / 2, y: 31)
+                        }
                         ForEach(result.visiblePlayerBoxes.indices, id: \.self) { index in
                             let body = result.visiblePlayerBoxes[index]
                             let matches = model.liveNameMatches.filter {
