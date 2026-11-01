@@ -904,3 +904,115 @@ private struct RemoteConsoleSelectionRow: View {
         }
     }
 }
+
+
+/// Accessible both from the main settings page and the live PS5 stream.
+/// Uses the exact same versioned validator as the normal Settings importer.
+struct VelmiraSettingsTransferPanel: View {
+    @State private var showImport = false
+    @State private var showPaste = false
+    @State private var showExport = false
+    @State private var pastedJSON = ""
+    @State private var exportDocument: VelmiraSettingsDocument?
+    @State private var resultText = ""
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                VelmiraSection("ملف جميع إعدادات Velmira Play") {
+                    Text("يدعم استيراد وتصدير التحكم، والذكاء الاصطناعي، وأزرار اللمس، والأسلحة، والبث، وملفات الألعاب. لا ينقل بيانات حساب PlayStation أو مفاتيح الاتصال.")
+                        .font(.footnote)
+                    Button {
+                        showImport = true
+                    } label: {
+                        Label("تحميل إعدادات JSON من الآيفون", systemImage: "square.and.arrow.down")
+                            .frame(maxWidth: .infinity, minHeight: 48)
+                    }.buttonStyle(AcidButtonStyle(active: true))
+                    Button {
+                        showPaste = true
+                    } label: {
+                        Label("لصق إعدادات JSON", systemImage: "doc.on.clipboard")
+                            .frame(maxWidth: .infinity, minHeight: 48)
+                    }.buttonStyle(AcidButtonStyle())
+                    Button {
+                        do {
+                            exportDocument = try VelmiraSettingsTransfer.exportCurrent()
+                            showExport = true
+                        } catch {
+                            resultText = error.localizedDescription
+                        }
+                    } label: {
+                        Label("تصدير جميع الإعدادات", systemImage: "square.and.arrow.up")
+                            .frame(maxWidth: .infinity, minHeight: 48)
+                    }.buttonStyle(AcidButtonStyle())
+                    if !resultText.isEmpty {
+                        Text(resultText).font(.footnote).foregroundStyle(.cyan)
+                    }
+                    Text("الاستيراد يوقف المساعدة ويتحقق من الملف قبل تطبيقه. لا تُفعَّل حركة التصويب تلقائياً.")
+                        .font(.caption).foregroundStyle(.orange)
+                }
+            }
+            .padding(20)
+            .frame(maxWidth: 660)
+            .frame(maxWidth: .infinity)
+        }
+        .background(TPPlayTheme.canvas)
+        .navigationTitle("استيراد وتصدير الإعدادات")
+        .sheet(isPresented: $showImport) {
+            VelmiraJSONPicker(onPicked: { url in
+                do {
+                    try VelmiraSettingsTransfer.importFile(at: url)
+                    resultText = "تم استيراد الإعدادات وحفظها؛ التأثيرات الآنية لا تحتاج إنهاء بث PS5."
+                } catch {
+                    resultText = error.localizedDescription
+                }
+                showImport = false
+            }, onCancel: { showImport = false })
+            .ignoresSafeArea()
+        }
+        .sheet(isPresented: $showPaste) {
+            NavigationStack {
+                VStack(alignment: .leading, spacing: 14) {
+                    Button {
+                        pastedJSON = UIPasteboard.general.string ?? ""
+                    } label: {
+                        Label("لصق من الحافظة", systemImage: "doc.on.clipboard")
+                    }
+                    TextEditor(text: $pastedJSON)
+                        .font(.system(.caption, design: .monospaced))
+                        .environment(\.layoutDirection, .leftToRight)
+                        .frame(minHeight: 180)
+                    Button("تطبيق وحفظ JSON") {
+                        do {
+                            try VelmiraSettingsTransfer.importData(Data(pastedJSON.utf8))
+                            resultText = "تم استيراد جميع الإعدادات بنجاح."
+                        } catch {
+                            resultText = error.localizedDescription
+                        }
+                        showPaste = false
+                    }
+                    .buttonStyle(AcidButtonStyle(active: true))
+                    .disabled(pastedJSON.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+                .padding()
+                .navigationTitle("استيراد من النص")
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button("إلغاء") { showPaste = false }
+                    }
+                }
+            }
+        }
+        .fileExporter(isPresented: $showExport,
+                      document: exportDocument, contentType: .json,
+                      defaultFilename: "Velmira-Settings") { result in
+            switch result {
+            case .success:
+                resultText = "تم تصدير إعدادات Velmira Play بنجاح."
+            case .failure(let error):
+                resultText = error.localizedDescription
+            }
+        }
+        .environment(\.layoutDirection, .rightToLeft)
+    }
+}
