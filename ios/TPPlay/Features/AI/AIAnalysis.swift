@@ -543,7 +543,7 @@ final class MatchRoster: ObservableObject {
                 let normalized = item.name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
                 guard seen.insert(normalized).inserted, updated.count < 64 else { continue }
                 updated.append(RosterName(name: item.name, side: item.side,
-                                          nameColorHEX: item.hex,
+                                          nameColorHEX: nil,
                                           isConfirmedByUser: false))
             }
             names = updated
@@ -638,17 +638,22 @@ private enum MW3ScoreboardOCR {
         rows.sort { $0.rect.midY > $1.rect.midY }
         guard !rows.isEmpty else { return [] }
 
-        // Teams in the normal MWIII scoreboard appear as upper/lower groups.
-        // Infer a separator only when there is a clear vertical gap; otherwise
-        // report unclassified names rather than asserting an incorrect team.
+        // MWIII scoreboard layout supplied by the user:
+        // UPPER BLUE section = player's team; LOWER RED section = opponents.
+        // OCR positions use bottom-left coordinates, sorted from top to bottom.
+        // Prefer the largest inter-section gap relative to ordinary row spacing
+        // instead of an arbitrary fixed 6.5% separation.
         let gaps = zip(rows, rows.dropFirst()).enumerated().map { index, pair in
             (index, pair.0.rect.midY - pair.1.rect.midY)
-        }.filter { $0.1 > 0.065 }
-        let split = gaps.max(by: { $0.1 < $1.1 })?.0
-        let validSplit = split.flatMap { idx -> Int? in
-            guard idx + 1 >= 2, rows.count - (idx + 1) >= 2 else { return nil }
-            return idx
-        }
+        }.filter { $0.1 > 0 }
+        let sortedSpaces = gaps.map(\.1).sorted()
+        let typicalSpacing = sortedSpaces.isEmpty ? 0.0 : sortedSpaces[sortedSpaces.count / 2]
+        let validSplit = gaps
+            .filter { $0.0 + 1 >= 2 && rows.count - $0.0 - 1 >= 2 }
+            .filter { $0.1 >= max(0.026, typicalSpacing * 1.60) }
+            .max(by: { $0.1 < $1.1 })?.0
+        // If the two colored sections are not visually separable, leave names
+        // unclassified. Never silently mark a friendly as an opponent.
         let colors: [RosterSide: String] = [
             .friendly: "#22A8F0", .opponent: "#FF683F", .unknown: "#9A9A9A"
         ]
