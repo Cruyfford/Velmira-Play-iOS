@@ -26,12 +26,37 @@ final class CoreMLYOLODetector: @unchecked Sendable {
         do {
             let fm = FileManager.default
             let compiled: URL
-            if let packaged = Bundle.main.url(forResource: "VelmiraMW3", withExtension: "mlmodelc") {
+            // Some resigning tools and source-only CI builds produce a bundle where
+            // Bundle.url(forResource:) cannot discover the raw .mlpackage directory.
+            // Look at the actual signed application root too, and verify the weights
+            // before attempting a potentially expensive Core ML compilation.
+            let bundleRoots = [Bundle.main.resourceURL, Bundle.main.bundleURL].compactMap { $0 }
+            let packagePaths = bundleRoots.map {
+                $0.appendingPathComponent("VelmiraMW3.mlpackage", isDirectory: true)
+            }
+            let weightsRelativePath = "Data/com.apple.CoreML/weights/weight.bin"
+            func validSourcePackage(_ candidate: URL) -> Bool {
+                let manifest = candidate.appendingPathComponent("Manifest.json")
+                let modelDefinition = candidate.appendingPathComponent("Data/com.apple.CoreML/model.mlmodel")
+                let weights = candidate.appendingPathComponent(weightsRelativePath)
+                guard fm.fileExists(atPath: manifest.path),
+                      fm.fileExists(atPath: modelDefinition.path),
+                      let size = (try? fm.attributesOfItem(atPath: weights.path))?[.size] as? NSNumber
+                else { return false }
+                return size.int64Value > 1_000_000
+            }
+            let discoveredSource = packagePaths.first(where: validSourcePackage)
+                ?? Bundle.main.url(forResource: "VelmiraMW3", withExtension: "mlpackage")
+                    .flatMap { validSourcePackage($0) ? $0 : nil }
+            let bundledCompiled = Bundle.main.url(forResource: "VelmiraMW3", withExtension: "mlmodelc")
+                ?? bundleRoots.map {
+                    $0.appendingPathComponent("VelmiraMW3.mlmodelc", isDirectory: true)
+                }.first(where: { fm.fileExists(atPath: $0.path) })
+            if let packaged = bundledCompiled {
                 compiled = packaged
-            } else if let source = Bundle.main.url(forResource: "VelmiraMW3", withExtension: "mlpackage") {
-                // A signed IPA may contain an unpacked .mlpackage resource.
-                // Compile once OFF the main thread, cache persistently to avoid
-                // expensive compilation on every subsequent launch.
+            } else if let source = discoveredSource {
+                // The signed IPA contains the original 640px model and its weights.
+                // Compile once on the analyzer's worker queue, then cache it.
                 let support = try fm.url(for: .applicationSupportDirectory,
                                          in: .userDomainMask, appropriateFor: nil, create: true)
                 let cached = support.appendingPathComponent("VelmiraMW3-yolov8n-640-v2.mlmodelc")
@@ -43,9 +68,11 @@ final class CoreMLYOLODetector: @unchecked Sendable {
                     compiled = cached
                 }
             } else {
+                let incomplete = packagePaths.contains { fm.fileExists(atPath: $0.path) }
                 throw NSError(domain: "VelmiraYOLO", code: 1,
-                              userInfo: [NSLocalizedDescriptionKey:
-                                "نموذج VelmiraMW3.mlpackage غير موجود داخل التطبيق."])
+                              userInfo: [NSLocalizedDescriptionKey: incomplete
+                                ? "حزمة VelmiraMW3.mlpackage موجودة لكنها ناقصة أو بدون أوزان weight.bin. ثبّت IPA الكامل بعد توقيعه."
+                                : "نموذج VelmiraMW3.mlpackage غير موجود داخل التطبيق. نسخة GitHub Actions المصدرية لا تحتوي الأوزان؛ ثبّت IPA الكامل."])
             }
 
             let configuration = MLModelConfiguration()
