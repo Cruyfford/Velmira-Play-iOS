@@ -230,6 +230,74 @@ enum NameplateRosterAssociation {
 }
 
 
+/// Safety boundary between visual YOLO detections and controller movement.
+/// YOLO's single "Enemy" class is *not* proof a person is on the other team.
+/// The conservative default permits ONLY bodies with a recent twice-confirmed
+/// overhead gamer tag which still belongs to the currently saved opponent roster.
+/// Unknown, friendly, ambiguous, stale, or duplicate associations cannot steer.
+enum TeamTargetSafety {
+    static func trackingSample(
+        from analysis: HumanAnalysis,
+        names: [LiveNameMatch],
+        roster: [KnownRosterPlayer],
+        now: TimeInterval,
+        requireConfirmedOpponent: Bool = true
+    ) -> TrackingSample {
+        let empty = TrackingSample(boxes: [], capturedAt: analysis.capturedAt,
+                                   colorMode: false, targetIDs: [])
+        guard analysis.error == nil, now.isFinite, analysis.capturedAt.isFinite,
+              now >= analysis.capturedAt, now - analysis.capturedAt <= 0.8 else {
+            return empty
+        }
+        let eligible = analysis.detections.filter {
+            $0.humanSupported && $0.matchedPersonBox != nil
+        }
+        guard !eligible.isEmpty else { return empty }
+
+        // Once the scoreboard is edited or the match changes, old identity
+        // observations must not authorize targets in the new roster.
+        let freshNames = names.filter { item in
+            guard item.capturedAt.isFinite,
+                  now >= item.capturedAt, now - item.capturedAt <= 1.55,
+                  item.capturedAt <= analysis.capturedAt + 0.12 else { return false }
+            return roster.contains {
+                $0.side == item.side &&
+                $0.name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil) ==
+                item.name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+            }
+        }
+
+        var boxes: [CGRect] = []
+        var ids: [UUID] = []
+        for person in eligible {
+            guard let body = person.matchedPersonBox else { continue }
+            let labels = freshNames.filter {
+                NameplateRosterAssociation.matchingBox(body, $0.body)
+            }
+            // Reject any friendlies and any conflicting or duplicate
+            // annotations. Unknown people do not become enemies by default.
+            guard !labels.contains(where: { $0.side == .friendly }),
+                  labels.count <= 1 else { continue }
+            if requireConfirmedOpponent {
+                guard let label = labels.first, label.side == .opponent else {
+                    continue
+                }
+                // If the same name could belong to two overlapping YOLO boxes,
+                // neither is a safe automatic target.
+                let contenders = eligible.filter {
+                    guard let other = $0.matchedPersonBox else { return false }
+                    return NameplateRosterAssociation.matchingBox(other, label.body)
+                }
+                guard contenders.count == 1 else { continue }
+            }
+            boxes.append(body)
+            ids.append(person.id)
+        }
+        return TrackingSample(boxes: boxes, capturedAt: analysis.capturedAt,
+                              colorMode: false, targetIDs: ids)
+    }
+}
+
 /// Analysis rate cap based on averaged on-device inference time and thermal pressure.
 enum AdaptiveAnalysisBudget {
     enum Heat: Int { case nominal = 0, fair = 1, serious = 2, critical = 3 }
