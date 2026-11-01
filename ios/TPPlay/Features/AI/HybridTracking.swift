@@ -82,6 +82,42 @@ struct HumanAnalysis: Sendable {
     }
 }
 
+/// UI-only cache to prevent player outlines blinking on a single missed YOLO
+/// inference. Its output must never be used for target acquisition or control.
+struct PlayerOverlayBoxHold {
+    private var boxes: [CGRect] = []
+    private var lastPositiveAt: TimeInterval = -.infinity
+
+    mutating func accept(_ candidates: [CGRect], capturedAt: TimeInterval,
+                         hasError: Bool = false) -> [CGRect] {
+        guard !hasError, capturedAt.isFinite else { reset(); return [] }
+        let valid = candidates.filter {
+            $0.minX.isFinite && $0.minY.isFinite &&
+            $0.width.isFinite && $0.height.isFinite &&
+            $0.minX >= 0 && $0.minY >= 0 &&
+            $0.maxX <= 1 && $0.maxY <= 1 &&
+            $0.width > 0 && $0.height > 0
+        }
+        if !valid.isEmpty {
+            boxes = valid
+            lastPositiveAt = capturedAt
+            return valid
+        }
+        // Up to ~450 ms of visual continuity only; an expired/missing YOLO
+        // result still means zero valid targets for TeamTargetSafety.
+        if capturedAt >= lastPositiveAt && capturedAt - lastPositiveAt <= 0.45 {
+            return boxes
+        }
+        reset()
+        return []
+    }
+
+    mutating func reset() {
+        boxes.removeAll()
+        lastPositiveAt = -.infinity
+    }
+}
+
 /// Color supplies the user-selected team cue; Vision supplies body geometry.
 /// Neither is proof of team identity. No observation survives a missing cue.
 enum HybridTargetFusion {
