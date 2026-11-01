@@ -366,3 +366,49 @@ oldSettings = try JSONDecoder().decode(AssistanceConfiguration.self, from: oldSe
 require(oldSettings.strongLock == nil,
         "Older saved settings decode safely without enabling strong lock")
 print("Strong verified target-lock tests passed")
+
+
+// Nameplate OCR ↔ YOLO spatial association (pure geometry; no Vision service).
+// MW3 shows the same handle above the player and in the scoreboard list.
+let bodyFriendly = CGRect(x: 0.16, y: 0.28, width: 0.15, height: 0.34)
+let bodyEnemy = CGRect(x: 0.66, y: 0.25, width: 0.16, height: 0.36)
+let labelFriendly = CGRect(x: 0.18, y: 0.63, width: 0.11, height: 0.022)
+let labelEnemy = CGRect(x: 0.675, y: 0.62, width: 0.12, height: 0.024)
+let knownRoster = [
+    KnownRosterPlayer(name: "CRUYFFORD#12345", side: .friendly),
+    KnownRosterPlayer(name: "[RED]Danger#99887", side: .opponent)
+]
+func labelFixture(_ text: String, _ box: CGRect, _ confidence: Float = 0.95) -> NameplateTextObservation {
+    NameplateTextObservation(text: text, box: box, confidence: confidence)
+}
+let matchedNames = NameplateRosterAssociation.match(
+    texts: [labelFixture("CRUYFFORD", labelFriendly), labelFixture("Danger", labelEnemy)],
+    bodies: [bodyFriendly, bodyEnemy], players: knownRoster, capturedAt: 1000)
+require(matchedNames.count == 2, "Both scoreboard names appear as confirmed YOLO labels")
+require(matchedNames.contains { $0.side == .friendly && $0.body == bodyFriendly },
+        "Friendly nameplate belongs only to the friendly body")
+require(matchedNames.contains { $0.side == .opponent && $0.body == bodyEnemy },
+        "Enemy nameplate belongs only to the enemy body")
+let unknownLabel = NameplateRosterAssociation.match(
+    texts: [labelFixture("NotInScoreboard", labelEnemy)],
+    bodies: [bodyEnemy], players: knownRoster, capturedAt: 1000)
+require(unknownLabel.isEmpty, "No invented names for unknown players")
+let textTooFar = NameplateRosterAssociation.match(
+    texts: [labelFixture("Danger", CGRect(x: 0.03, y: 0.90, width: 0.08, height: 0.02))],
+    bodies: [bodyEnemy], players: knownRoster, capturedAt: 1000)
+require(textTooFar.isEmpty, "A remote HUD label must not attach to a YOLO box")
+let duplicateHandle = NameplateRosterAssociation.match(
+    texts: [labelFixture("Danger", labelEnemy)],
+    bodies: [bodyEnemy], players: knownRoster + [
+        KnownRosterPlayer(name: "[ABC]Danger#77777", side: .friendly)
+    ], capturedAt: 1000)
+require(duplicateHandle.isEmpty, "Identical gamer tags in both teams must remain unclassified")
+let weakLabel = NameplateRosterAssociation.match(
+    texts: [labelFixture("Danger", labelEnemy, 0.21)],
+    bodies: [bodyEnemy], players: knownRoster, capturedAt: 1000)
+require(weakLabel.isEmpty, "Low-confidence text must not be treated as identity")
+require(NameplateRosterAssociation.matchingBox(bodyFriendly, bodyFriendly),
+        "Stable YOLO body retains an on-screen name")
+require(!NameplateRosterAssociation.matchingBox(bodyFriendly, bodyEnemy),
+        "On-screen name must not drift to another YOLO player")
+print("Nameplate-roster association checks passed")
