@@ -646,7 +646,7 @@ private enum MW3ScoreboardOCR {
         let gaps = zip(rows, rows.dropFirst()).enumerated().map { index, pair in
             (index, pair.0.rect.midY - pair.1.rect.midY)
         }.filter { $0.1 > 0 }
-        let sortedSpaces = gaps.map(\.1).sorted()
+        let sortedSpaces = gaps.map { $0.1 }.sorted()
         let typicalSpacing = sortedSpaces.isEmpty ? 0.0 : sortedSpaces[sortedSpaces.count / 2]
         let validSplit = gaps
             .filter { $0.0 + 1 >= 2 && rows.count - $0.0 - 1 >= 2 }
