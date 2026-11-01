@@ -17,6 +17,9 @@ struct RemotePlayView: View {
     @State private var calibrationShot: CalibrationShot?
     @State private var playerNameShot: CalibrationShot?
     @State private var showingRoster = false
+    @State private var showingStreamSettings = false
+    @State private var pendingStreamCalibration = false
+    @State private var pendingScoreboardScan = false
     @State private var calibrationError = false
     @State private var loginPIN = ""
     @State private var hasExternalController = false
@@ -130,6 +133,35 @@ struct RemotePlayView: View {
                 .zIndex(10)
             }
         }
+        .sheet(isPresented: $showingStreamSettings, onDismiss: {
+            // A one-shot scoreboard photo or calibration starts only *after*
+            // the settings sheet is fully closed. Neither needs a separate
+            // stream or a new PSN pairing.
+            if pendingStreamCalibration {
+                pendingStreamCalibration = false
+                openCalibrationCapture()
+            } else if pendingScoreboardScan {
+                pendingScoreboardScan = false
+                captureScoreboard()
+            } else if scenePhase == .active {
+                session.resumeAssistance()
+            }
+            showMetrics = UserDefaults.standard.object(forKey: "velmira.showMetrics.compact.v2") as? Bool ?? false
+        }) {
+            InStreamSettingsCenter(
+                showMetrics: $showMetrics,
+                onClose: { showingStreamSettings = false },
+                onCalibrate: {
+                    pendingStreamCalibration = true
+                    showingStreamSettings = false
+                },
+                onScanTeams: {
+                    pendingScoreboardScan = true
+                    showingStreamSettings = false
+                }
+            )
+            .preferredColorScheme(.dark)
+        }
         .sheet(isPresented: $showingWeaponLibrary, onDismiss: {
             if scenePhase == .active { session.resumeAssistance() }
         }) {
@@ -221,7 +253,7 @@ struct RemotePlayView: View {
             if phase == .active {
                 TPPlayOrientation.set(.landscape)
                 AIFrameAnalyzer.shared.setPaused(false)
-                if calibrationShot == nil && playerNameShot == nil && !showingRoster { session.resumeAssistance() }
+                if calibrationShot == nil && playerNameShot == nil && !showingRoster && !showingStreamSettings { session.resumeAssistance() }
                 UIApplication.shared.isIdleTimerDisabled = true
                 if wasBackgrounded {
                     wasBackgrounded = false
@@ -252,6 +284,12 @@ struct RemotePlayView: View {
                 .accessibilityLabel("الخروج من البث والعودة إلى الأجهزة")
 
                 Menu {
+                    Button("جميع إعدادات البرنامج", systemImage: "gearshape.2.fill") {
+                        openStreamSettings()
+                    }
+                    Button("معايرة لون وموضع الهدف", systemImage: "scope") {
+                        openCalibrationCapture()
+                    }
                     Button("قراءة الفريقين من لوحة النتائج", systemImage: "person.2.text") {
                         captureScoreboard()
                     }
@@ -298,6 +336,16 @@ struct RemotePlayView: View {
                         .overlay(Capsule().stroke(TPPlayTheme.accent.opacity(0.45), lineWidth: 1))
                 }
                 .accessibilityLabel("أدوات البث والإعدادات")
+
+                Button {
+                    openStreamSettings()
+                } label: {
+                    Label("الإعدادات", systemImage: "gearshape.2")
+                        .padding(.horizontal, 12)
+                        .frame(minHeight: 42)
+                        .background(TPPlayTheme.violet.opacity(0.80), in: Capsule())
+                }
+                .accessibilityLabel("فتح جميع إعدادات Velmira Play أثناء بث PS5")
 
                 Button {
                     captureScoreboard()
@@ -398,6 +446,13 @@ struct RemotePlayView: View {
         .padding(.horizontal, 12)
         .padding(.top, 8)
         .zIndex(10)
+    }
+
+    private func openStreamSettings() {
+        guard !showingStreamSettings else { return }
+        showsSessionMenu = false
+        session.suspendAssistance(preserveActivation: true)
+        showingStreamSettings = true
     }
 
     private func captureScoreboard() {
@@ -564,6 +619,10 @@ struct RemotePlayView: View {
                     }
                     streamMenuButton("PS", symbol: "playstation.logo") {
                         session.clickPSButton()
+                    }
+                    streamMenuButton("SETTINGS", symbol: "gearshape.2") {
+                        showsSessionMenu = false
+                        openStreamSettings()
                     }
                     streamMenuButton("LAYOUT", symbol: "slider.horizontal.3", disabled: !showsVirtualControls) {
                         showsSessionMenu = false
@@ -816,5 +875,154 @@ private struct StreamPresetNameDialog: View {
         }
         .overlay { Rectangle().stroke(TPPlayTheme.violet, lineWidth: 1) }
         .onAppear { focused = true }
+    }
+}
+
+
+/// All existing app settings stay reachable while the PS5 Remote Play session
+/// remains connected. Controller assistance is suspended by the presenting
+/// view and restored on dismissal; no reconnect or logout is triggered here.
+private struct InStreamSettingsCenter: View {
+    @ObservedObject private var assistance = AssistanceState.shared
+    @ObservedObject private var ai = AIAnalysisState.shared
+    @ObservedObject private var layouts = TouchLayoutStore.shared
+    @ObservedObject private var roster = MatchRoster.shared
+    @Binding var showMetrics: Bool
+    let onClose: () -> Void
+    let onCalibrate: () -> Void
+    let onScanTeams: () -> Void
+    @State private var notice = ""
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("تستطيع تعديل كل إعدادات Velmira من هنا دون إنهاء بث PS5. يتم إيقاف أوامر المساعدة مؤقتاً طوال فتح لوحة الإعدادات.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    VelmiraSection("التحكم السريع أثناء البث") {
+                        Toggle("تشغيل تحليل YOLOv8n", isOn: $ai.enabled)
+                        Toggle("إظهار مربعات اللاعبين والأسماء", isOn: $ai.showPlayerBoxes)
+                        Toggle("تأكيد الاكتشاف قبل عرض النتيجة", isOn: $ai.precisionMode)
+                        Toggle("إظهار موضع الجسم المختار", isOn: $ai.adaptiveBodyMarker)
+                        Toggle("لوحة قياسات الأداء", isOn: $showMetrics)
+                        scale("ثقة الكشف", value: $ai.threshold, range: 0.20...0.95)
+                        scale("قوة التصحيح", value: $assistance.configuration.strength, range: 0.1...5)
+                        scale("نطاق التتبع", value: $assistance.configuration.radius, range: 0.05...0.5)
+                        scale("تنعيم الحركة", value: $assistance.configuration.response, range: 0.02...0.5)
+                        scale("ارتفاع النقطة على الجسم", value: $assistance.configuration.pointY, range: 0...1)
+                        Picker("تحليل YOLO في الثانية", selection: $ai.rate) {
+                            Text("3").tag(3.0)
+                            Text("5").tag(5.0)
+                            Text("8").tag(8.0)
+                            Text("12").tag(12.0)
+                            Text("20").tag(20.0)
+                            Text("24").tag(24.0)
+                        }.pickerStyle(.menu)
+                        Text("معدل التحليل المطلوب ليس FPS مضموناً؛ عند الضغط الحراري يخفض التطبيق السرعة تلقائياً.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Button {
+                            let a = assistance.saveSettings()
+                            let b = ai.saveSettings()
+                            let c = layouts.saveLayouts()
+                            UserDefaults.standard.set(showMetrics, forKey: "velmira.showMetrics.compact.v2")
+                            notice = a && b && c ? "حُفظت إعدادات التحكم والذكاء والأزرار والأداء."
+                                                 : "تعذّر حفظ بعض الإعدادات."
+                        } label: {
+                            Label("حفظ جميع التعديلات السريعة", systemImage: "square.and.arrow.down")
+                                .frame(maxWidth: .infinity, minHeight: 46)
+                        }
+                        .buttonStyle(AcidButtonStyle(active: true))
+                        if !notice.isEmpty {
+                            Text(notice).font(.footnote).foregroundStyle(.cyan)
+                        }
+                    }
+                    VelmiraSection("أقسام الإعدادات الكاملة") {
+                        link("التحكم والتتبع — جميع الأشرطة والماكروز والارتداد",
+                             icon: "scope") { AssistanceSettings() }
+                        link("الذكاء الاصطناعي — الألوان والكشف والأداء",
+                             icon: "viewfinder") { AIAnalysisSettings() }
+                        link("أسلحة MW3 — كل الأسلحة والاختصارات الستة",
+                             icon: "square.stack.3d.up") { MW3WeaponCatalogView() }
+                        link("قائمة فريقك والخصوم — الأسماء والتصنيف",
+                             icon: "person.2.fill") { MatchRosterView() }
+                        link("أزرار اللمس والعصي — المواضع والحساسية",
+                             icon: "hand.draw") { TouchLayoutSettingsView() }
+                        link("جودة بث PS5 — الدقة والإطارات والبتريت",
+                             icon: "tv") { VelmiraAdvancedSettings() }
+                        link("ملفات الألعاب — الحفظ والتحميل والتبديل",
+                             icon: "square.stack") { VelmiraToolsView() }
+                        link("استيراد وتصدير ملف JSON شامل",
+                             icon: "square.and.arrow.up.on.square") { VelmiraSettingsTransferPanel() }
+                        link("اختبار يد التحكم",
+                             icon: "gamecontroller") { ControllerTestView() }
+                        link("تشخيص اتصال PS5",
+                             icon: "wifi") { LinkDiagnosticView() }
+                        link("الاتصال عبر الإنترنت و5G",
+                             icon: "globe") { RemotePlayInternetSettingsView() }
+                    }
+                    VelmiraSection("إجراءات البث المباشرة") {
+                        Button(action: onCalibrate) {
+                            Label("التقاط شاشة PS5 لمعايرة اللون والنقطة", systemImage: "scope")
+                                .frame(maxWidth: .infinity, minHeight: 46)
+                        }
+                        .buttonStyle(AcidButtonStyle())
+                        Button(action: onScanTeams) {
+                            Label("قراءة أسماء الفريقين من لوحة النتائج", systemImage: "person.text.rectangle")
+                                .frame(maxWidth: .infinity, minHeight: 46)
+                        }
+                        .buttonStyle(AcidButtonStyle())
+                        Text("قائمة اللاعبين المحفوظة: فريقي \(roster.names.filter { $0.side == .friendly }.count) • الخصوم \(roster.names.filter { $0.side == .opponent }.count). افتح لوحة النتائج قبل التصوير.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Text("تغيير دقة البث ومعدل الإطارات والبتريت يسري في جلسة الاتصال التالية، أما إعدادات التحليل فتسري مباشرة بعد إغلاق هذه اللوحة.")
+                            .font(.caption).foregroundStyle(.orange)
+                    }
+                }
+                .padding(18)
+                .frame(maxWidth: 760)
+                .frame(maxWidth: .infinity)
+            }
+            .background(TPPlayTheme.canvas)
+            .navigationTitle("إعدادات البث الكاملة")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("العودة للبث", action: onClose)
+                }
+            }
+        }
+        .environment(\.layoutDirection, .rightToLeft)
+    }
+
+    private func scale(_ label: String, value: Binding<Double>,
+                       range: ClosedRange<Double>) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(label)
+                Spacer()
+                Text(String(format: "%.2f", value.wrappedValue))
+                    .monospacedDigit().foregroundStyle(.cyan)
+            }
+            Slider(value: value, in: range)
+        }
+    }
+
+    private func link<Destination: View>(
+        _ title: String, icon: String,
+        @ViewBuilder destination: @escaping () -> Destination
+    ) -> some View {
+        NavigationLink(destination: destination) {
+            HStack(spacing: 10) {
+                Image(systemName: icon).frame(width: 23)
+                Text(title).font(.subheadline).multilineTextAlignment(.leading)
+                Spacer(minLength: 2)
+                Image(systemName: "chevron.left").font(.caption)
+            }
+            .frame(maxWidth: .infinity, minHeight: 43)
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 9)
+        .background(TPPlayTheme.surface, in: RoundedRectangle(cornerRadius: 10))
     }
 }
