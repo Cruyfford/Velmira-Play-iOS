@@ -58,6 +58,8 @@ final class AIAnalysisState: ObservableObject {
     @Published var hybridMode = true { didSet { configure() } }
     @Published var adaptiveBodyMarker = true { didSet { configure() } }
     @Published var showPlayerBoxes = true
+    /// Defaults ON: only a confirmed opposing name above a YOLO body can authorize tracking.
+    @Published var protectTeammates = true
     @Published var precisionMode = true { didSet { configure() } }
     private var persistence = StableDetectionFilter()
     @Published var colorHue = 0.0 { didSet { configure() } }
@@ -81,6 +83,7 @@ final class AIAnalysisState: ObservableObject {
     private let settingsKey = "velmira.ai.explicitSave.v1"
     private let adaptiveMarkerKey = "velmira.ai.bodyMarker.v1"
     private let playerBoxesKey = "velmira.ai.greenPlayerBoxes.v1"
+    private let teammateProtectionKey = "velmira.ai.requireConfirmedOpponent.v1"
 
     private init() {
         restoreSavedSettings()
@@ -96,12 +99,14 @@ final class AIAnalysisState: ObservableObject {
         UserDefaults.standard.set(data, forKey: settingsKey)
         UserDefaults.standard.set(adaptiveBodyMarker, forKey: adaptiveMarkerKey)
         UserDefaults.standard.set(showPlayerBoxes, forKey: playerBoxesKey)
+        UserDefaults.standard.set(protectTeammates, forKey: teammateProtectionKey)
         return true
     }
 
     func restoreSavedSettings() {
         adaptiveBodyMarker = UserDefaults.standard.object(forKey: adaptiveMarkerKey) as? Bool ?? true
         showPlayerBoxes = UserDefaults.standard.object(forKey: playerBoxesKey) as? Bool ?? true
+        protectTeammates = UserDefaults.standard.object(forKey: teammateProtectionKey) as? Bool ?? true
         guard let data = UserDefaults.standard.data(forKey: settingsKey),
               let value = try? JSONDecoder().decode(SavedAISettings.self, from: data) else {
             return
@@ -189,6 +194,10 @@ final class AIAnalysisState: ObservableObject {
         }
         liveNameMatches = verified
         VelmiraLiveDiagnostics.shared.updateOCR("تم تأكيد \(verified.count) من تسميات اللاعبين")
+    }
+    func invalidateRosterMatches() {
+        liveNameMatches = []
+        pendingNameMatches.removeAll()
     }
     func clear() {
         result = nil
@@ -402,17 +411,18 @@ struct AIAnalysisOverlay: View {
                     if model.showPlayerBoxes {
                         ForEach(result.visiblePlayerBoxes.indices, id: \.self) { index in
                             let body = result.visiblePlayerBoxes[index]
-                            let named = model.liveNameMatches.first {
-                                ProcessInfo.processInfo.systemUptime - $0.capturedAt <= 1.30 &&
+                            let matches = model.liveNameMatches.filter {
+                                ProcessInfo.processInfo.systemUptime - $0.capturedAt <= 1.55 &&
                                 NameplateRosterAssociation.matchingBox(body, $0.body)
                             }
+                            let named = matches.count == 1 ? matches.first : nil
                             let boxColor: Color = named?.side == .friendly
                                 ? .cyan : (named?.side == .opponent ? .orange : .green)
                             Rectangle().stroke(boxColor, lineWidth: 2.5)
                                 .frame(width: body.width * width, height: body.height * height)
                                 .overlay(alignment: .topLeading) {
-                                    Text(named.map { "\($0.name) • \($0.side.rawValue)" } ??
-                                         PlayerVisualCues.proximity(for: body))
+                                    Text(named.map { "\($0.name) • \($0.side == .friendly ? "محمي: من فريقي" : "خصم مؤكد")" } ??
+                                         (model.protectTeammates ? "مجهول — التتبع محظور" : PlayerVisualCues.proximity(for: body)))
                                         .font(.system(size: 10, weight: .bold))
                                         .foregroundStyle(Color.white)
                                         .padding(.horizontal, 5)
@@ -426,7 +436,13 @@ struct AIAnalysisOverlay: View {
                         }
                     }
                     ForEach(result.detections) { detection in
-                        if model.adaptiveBodyMarker, let body = detection.matchedPersonBox {
+                        if model.adaptiveBodyMarker, let body = detection.matchedPersonBox,
+                           TeamTargetSafety.trackingSample(
+                               from: result, names: model.liveNameMatches,
+                               roster: MatchRoster.shared.names.map { KnownRosterPlayer(name: $0.name, side: $0.side) },
+                               now: ProcessInfo.processInfo.systemUptime,
+                               requireConfirmedOpponent: model.protectTeammates
+                           ).boxes.contains(where: { NameplateRosterAssociation.matchingBox($0, body) }) {
                             let position = VisualBodyAssociation.selectedPoint(
                                 in: body, x: assistance.configuration.pointX,
                                 y: assistance.configuration.pointY)
@@ -457,11 +473,14 @@ struct AIAnalysisSettings: View {
                         .frame(maxWidth: .infinity, minHeight: 54)
                 }.buttonStyle(AcidButtonStyle(active: true))
                 VelmiraSection("الذكاء الاصطناعي — معاينة البث") {
+                    Toggle("حماية فريقي — تتبع الخصوم المؤكدين فقط", isOn: $model.protectTeammates)
+                    Text("مفعّلة افتراضياً: يمنع توجيه التصويب نحو الحليف أو أي لاعب مجهول. يتوقف التتبع حين لا يمكن قراءة اسم الخصم فوق جسمه بوضوح. يمكن تعطيلها يدوياً، لكن ذلك يعيد احتمال استهداف الحلفاء.")
+                        .font(.footnote).foregroundStyle(.orange)
                     Button("كشف MW3 تلقائي — YOLOv8n المدرّب") { model.prepareHybridTracking() }
                     Toggle("تشغيل تحليل الصورة", isOn: $model.enabled)
                     Text("YOLOv8n المدرّب على بيانات MW3 يكشف فئة Enemy من صورة اللاعب دون إدخال الاسم أو لون HUD.")
-                    Toggle("إظهار مربعات خضراء حول اللاعبين المكتشفين", isOn: $model.showPlayerBoxes)
-                    Text("بجانب كل مربع يظهر قرب نسبي (قريب جدًا / قريب / متوسط / بعيد) حسب ارتفاع الجسم في الصورة، وليس مسافة بالمتر. الأجسام المكتشفة قد تشمل لاعبي فريقك.")
+                    Toggle("إظهار مربعات اللاعبين وتصنيف فريقهم", isOn: $model.showPlayerBoxes)
+                    Text("سماوي: لاعب فريقي محمي. برتقالي: خصم قرئ اسمه وتأكد عبر عدة إطارات. أخضر: غير مصنف، لا يُتتبّع في وضع حماية الفريق. القرب نسبي وليس بالمتر.")
                         .font(.footnote)
                     Toggle("إظهار موضع الجسم المختار مع تغير مسافة اللاعب", isOn: $model.adaptiveBodyMarker)
                     Text("يتتبع الموضع داخل الجسم مع قفل الهدف المستمر عند تفعيله، مع L2 وبدونه. إظهار العلامة خيار مرئي فقط.")
@@ -566,7 +585,10 @@ struct AutoRosterCandidate: Sendable {
 final class MatchRoster: ObservableObject {
     static let shared = MatchRoster()
     @Published var names: [RosterName] = [] {
-        didSet { saveRoster() }
+        didSet {
+            saveRoster()
+            AIAnalysisState.shared.invalidateRosterMatches()
+        }
     }
     @Published var reading = false
     @Published var message = "افتح لوحة النتائج داخل PS5، ثم اضغط زر قراءة الفريقين في شريط البث."
