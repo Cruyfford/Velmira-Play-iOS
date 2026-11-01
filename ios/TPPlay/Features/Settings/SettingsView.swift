@@ -9,6 +9,8 @@ private struct VelmiraPortableAI: Codable {
     var hybridMode: Bool
     var adaptiveBodyMarker: Bool
     var precisionMode: Bool
+    /// Optional to retain compatibility with older version-1 JSON packages.
+    var protectTeammates: Bool?
     var colorHue: Double
     var colorTolerance: Double
     var enabled: Bool
@@ -96,6 +98,7 @@ private enum VelmiraSettingsTransfer {
             ai: VelmiraPortableAI(
                 colorMode: ai.colorMode, hybridMode: ai.hybridMode,
                 adaptiveBodyMarker: ai.adaptiveBodyMarker, precisionMode: ai.precisionMode,
+                protectTeammates: ai.protectTeammates,
                 colorHue: ai.colorHue, colorTolerance: ai.colorTolerance,
                 enabled: ai.enabled, threshold: ai.threshold, rate: ai.rate),
             stream: VelmiraPortableStream(
@@ -152,6 +155,7 @@ private enum VelmiraSettingsTransfer {
         ai.hybridMode = profile.ai.hybridMode
         ai.adaptiveBodyMarker = profile.ai.adaptiveBodyMarker
         ai.precisionMode = profile.ai.precisionMode
+        ai.protectTeammates = profile.ai.protectTeammates ?? true
         ai.colorHue = profile.ai.colorHue
         ai.colorTolerance = profile.ai.colorTolerance
         ai.threshold = profile.ai.threshold
