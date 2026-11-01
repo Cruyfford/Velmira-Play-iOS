@@ -228,3 +228,32 @@ enum NameplateRosterAssociation {
         return union > 0 && area / union >= 0.22
     }
 }
+
+
+/// Analysis rate cap based on averaged on-device inference time and thermal pressure.
+enum AdaptiveAnalysisBudget {
+    enum Heat: Int { case nominal = 0, fair = 1, serious = 2, critical = 3 }
+    static func level(_ thermal: ProcessInfo.ThermalState) -> Heat {
+        switch thermal {
+        case .nominal: .nominal
+        case .fair: .fair
+        case .serious: .serious
+        case .critical: .critical
+        @unknown default: .fair
+        }
+    }
+    static func limit(requested: Double, averageInferenceMS: Double, thermalLevel: Heat) -> Double {
+        guard requested.isFinite, requested > 0 else { return 1 }
+        var limited = min(24, max(1, requested))
+        if averageInferenceMS.isFinite && averageInferenceMS > 1 {
+            limited = min(limited, max(1, 700 / averageInferenceMS))
+        }
+        switch thermalLevel {
+        case .nominal: break
+        case .fair: limited = min(limited, 10)
+        case .serious: limited = min(limited, 3)
+        case .critical: limited = min(limited, 1)
+        }
+        return max(1, limited)
+    }
+}
