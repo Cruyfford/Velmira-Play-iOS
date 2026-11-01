@@ -214,7 +214,7 @@ private enum VelmiraSettingsTransfer {
         try check(p.ai.colorHue, 0...1, "لون العلامة")
         try check(p.ai.colorTolerance, 0.01...0.15, "سماحية اللون")
         try check(p.ai.threshold, 0.2...0.95, "ثقة الذكاء الاصطناعي")
-        guard [3.0, 5.0, 8.0].contains(p.ai.rate) else {
+        guard [3.0, 5.0, 8.0, 12.0, 20.0, 24.0].contains(p.ai.rate) else {
             throw VelmiraImportError.invalidValue("معدل التحليل")
         }
         guard [720, 1080].contains(p.stream.resolution),
@@ -260,7 +260,7 @@ private enum VelmiraSettingsTransfer {
                   [720, 1080].contains(game.resolution),
                   [30, 60].contains(game.fps),
                   (2_000...100_000).contains(game.bitrate),
-                  [3.0, 5.0, 8.0].contains(game.rate) else {
+                  [3.0, 5.0, 8.0, 12.0, 20.0, 24.0].contains(game.rate) else {
                 throw VelmiraImportError.invalidValue("ملف إعدادات اللعبة")
             }
             try checkAssistance(game.assistance)
@@ -1014,5 +1014,38 @@ struct VelmiraSettingsTransferPanel: View {
             }
         }
         .environment(\.layoutDirection, .rightToLeft)
+    }
+}
+
+
+/// User-controlled snapshot of all shareable settings (never PSN credentials).
+@MainActor
+enum VelmiraSettingsCheckpoint {
+    private static let key = "velmira.settings.checkpoint.v1"
+    static var exists: Bool { UserDefaults.standard.data(forKey: key) != nil }
+    static func save() throws {
+        UserDefaults.standard.set(try VelmiraSettingsTransfer.exportCurrent().data, forKey: key)
+    }
+    static func restore() throws {
+        guard let data = UserDefaults.standard.data(forKey: key) else {
+            throw VelmiraImportError.cannotRead
+        }
+        try VelmiraSettingsTransfer.importData(data)
+    }
+}
+
+struct VelmiraDiagnosticLogDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.plainText] }
+    var text: String
+    init(text: String) { self.text = text }
+    init(configuration: ReadConfiguration) throws {
+        guard let data = configuration.file.regularFileContents,
+              let value = String(data: data, encoding: .utf8) else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        text = value
+    }
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: Data(text.utf8))
     }
 }
