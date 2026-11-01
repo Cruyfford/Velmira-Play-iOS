@@ -3,6 +3,8 @@ import CoreVideo
 import ImageIO
 import PhotosUI
 import CoreImage
+import Vision
+import ImageIO
 
 /// Analysis is independent from controller output; assistance consumes fresh results only.
 @MainActor
@@ -390,11 +392,11 @@ final class MatchRoster: ObservableObject {
         didSet { saveRoster() }
     }
     @Published var reading = false
-    @Published var message = "ابدأ مباراة جديدة ثم أضف صورة لوحة النتائج."
+    @Published var message = "افتح لوحة النتائج داخل PS5، ثم اضغط زر قراءة الفريقين في شريط البث."
     @Published var matchNumber = 1
     @Published var autoScanEnabled = UserDefaults.standard.object(forKey: "velmira.roster.autoscan.v1") as? Bool ?? true {
         didSet {
-            // YOLO does not read names; no OCR scanner is launched.
+            // Manual scoreboard OCR remains separate from YOLO body inference.
             if !autoScanEnabled { pending.removeAll() }
         }
     }
@@ -406,7 +408,7 @@ final class MatchRoster: ObservableObject {
     func restoreAutoScanSetting() {
         autoScanEnabled = UserDefaults.standard.object(forKey: "velmira.roster.autoscan.v1") as? Bool ?? true
     }
-    @Published private(set) var autoStatus = "يُراقب الأسماء الملونة أثناء بث PS5 عند تفعيل الاكتشاف."
+    @Published private(set) var autoStatus = "بانتظار قراءة لوحة النتائج من صورة البث."
     private struct Pending {
         var side: RosterSide
         var hex: String
@@ -506,28 +508,226 @@ final class MatchRoster: ObservableObject {
         autoStatus = "بدأت مباراة جديدة. سيُعاد اكتشاف أسماء الفريقين."
         message = "تم مسح بيانات المباراة السابقة."
     }
+    /// Manual capture only: users open the MW3 scoreboard and press the button.
+    /// OCR runs off the main/UI thread and never changes YOLO inference or controller output.
     func read(_ data: Data) async {
-        message = "YOLO يكشف الأشخاص، لا نصوص الأسماء؛ الكشف الآلي لا يحتاج أسماء."
+        guard let image = UIImage(data: data)?.cgImage else {
+            message = "الصورة غير صالحة."
+            return
+        }
+        await read(image)
+    }
+
+    func read(_ image: CGImage) async {
+        guard !reading else { return }
+        reading = true
+        message = "جارٍ قراءة أسماء اللاعبين من لوحة النتائج..."
+        defer { reading = false }
+        let captured = ScoreboardCapturedImage(image: image)
+        do {
+            let items = try await Task.detached(priority: .userInitiated) {
+                try MW3ScoreboardOCR.read(captured.image)
+            }.value
+            guard !items.isEmpty else {
+                message = "لم أتعرف على لوحة نتائج MW3. افتح لوحة النتائج كاملة وجرّب مرة أخرى."
+                return
+            }
+            // Keep previous user-confirmed edits. The rest are refreshed from
+            // the requested screenshot; no background or speculative additions.
+            var updated = names.filter { $0.isConfirmedByUser == true }
+            let confirmed = Set(updated.map {
+                $0.name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            })
+            var seen = confirmed
+            for item in items {
+                let normalized = item.name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+                guard seen.insert(normalized).inserted, updated.count < 64 else { continue }
+                updated.append(RosterName(name: item.name, side: item.side,
+                                          nameColorHEX: item.hex,
+                                          isConfirmedByUser: false))
+            }
+            names = updated
+            let friendly = items.filter { $0.side == .friendly }.count
+            let opponent = items.filter { $0.side == .opponent }.count
+            let unknown = items.filter { $0.side == .unknown }.count
+            autoStatus = "آخر قراءة: فريقي \(friendly) • الخصوم \(opponent) • غير مصنف \(unknown)"
+            message = "تم استخراج \(items.count) اسماً. راجع الفريقين قبل الاعتماد عليهما؛ OCR لا يربط الأسماء بأجسام YOLO تلقائياً."
+        } catch {
+            message = "تعذرت قراءة لوحة النتائج: \(error.localizedDescription)"
+        }
+    }
+
+    func swapDetectedSides() {
+        for index in names.indices where names[index].side != .unknown {
+            names[index].side = names[index].side == .friendly ? .opponent : .friendly
+            names[index].isConfirmedByUser = true
+        }
+        message = "تم تبديل الفريقين وتثبيت التصنيف يدوياً."
     }
 }
+
+// The CGImage is immutable; it is safe to transfer a captured image to a
+// dedicated OCR task without touching a live CVPixelBuffer on another queue.
+private struct ScoreboardCapturedImage: @unchecked Sendable {
+    let image: CGImage
+}
+
+/// On-demand OCR of the *visible scoreboard only*. This deliberately never
+/// guesses in-game body identity from scoreboard row order.
+private enum MW3ScoreboardOCR {
+    private struct Line {
+        let text: String
+        let rect: CGRect
+        let confidence: Float
+    }
+
+    private static let blocked: Set<String> = [
+        "SCORE", "SCOREBOARD", "KILLS", "DEATHS", "ASSISTS",
+        "PING", "LATENCY", "TIME", "TEAM", "PLAYERS", "OBJECTIVES",
+        "MATCH", "STATS", "RANK", "NAME", "PLAYER", "LEVEL",
+        "WIN", "LOSS", "WINS", "LOSSES", "MUTE", "REPORT",
+        "SETTINGS", "COD", "MW3", "MWIII", "XP", "SPECTATING",
+        "MUTED", "DISPLAY", "FRIENDS", "SOCIAL", "TAC-MAP",
+        "BACK", "EXIT", "OPTIONS", "CONTINUE", "YOU",
+        "SPECTATOR", "K/D", "K/D/A", "KD", "KDA", "MS"
+    ]
+
+    static func read(_ image: CGImage) throws -> [AutoRosterCandidate] {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = false // Do not auto-correct gamer tags.
+        request.recognitionLanguages = ["en-US"]
+        request.minimumTextHeight = 0.010
+        try VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
+        let lines: [Line] = (request.results ?? []).compactMap { line in
+            guard let top = line.topCandidates(1).first, top.confidence >= 0.24 else { return nil }
+            let name = top.string.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty else { return nil }
+            return Line(text: name, rect: line.boundingBox, confidence: top.confidence)
+        }
+        let cues = lines.filter { line in
+            let t = line.text.uppercased()
+            return t.contains("SCORE") || t.contains("KILLS") ||
+                   t.contains("DEATHS") || t.contains("LATENCY") ||
+                   t.contains("PING") || t.contains("SCOREBOARD")
+        }
+        // Refuse to pollute the roster when this is ordinary gameplay HUD.
+        guard cues.count >= 2 || cues.contains(where: { $0.text.uppercased().contains("SCOREBOARD") }) else {
+            return []
+        }
+        var rows = lines.filter { line in
+            let name = line.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let uppercase = name.uppercased()
+            let words = uppercase.split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            let allowedPunctuation = CharacterSet(charactersIn: "_-#[]. ")
+            let filteredText = name.unicodeScalars.filter {
+                CharacterSet.letters.contains($0) || CharacterSet.decimalDigits.contains($0) ||
+                allowedPunctuation.contains($0)
+            }
+            guard filteredText.count >= name.unicodeScalars.count - 2,
+                  name.count >= 3, name.count <= 30,
+                  name.unicodeScalars.filter({ CharacterSet.letters.contains($0) }).count >= 2,
+                  !(words.count == 1 && blocked.contains(uppercase)),
+                  !words.contains(where: { blocked.contains(String($0)) && words.count <= 2 }),
+                  line.rect.minX >= 0.055, line.rect.minX <= 0.50,
+                  line.rect.midY >= 0.12, line.rect.midY <= 0.88,
+                  line.rect.width <= 0.42, line.rect.height <= 0.064 else { return false }
+            // Text directly above the scoreboard column headings is not a player.
+            return !cues.contains(where: { abs($0.rect.midY - line.rect.midY) < 0.012 })
+        }
+        rows.sort { $0.rect.midY > $1.rect.midY }
+        guard !rows.isEmpty else { return [] }
+
+        // Teams in the normal MWIII scoreboard appear as upper/lower groups.
+        // Infer a separator only when there is a clear vertical gap; otherwise
+        // report unclassified names rather than asserting an incorrect team.
+        let gaps = zip(rows, rows.dropFirst()).enumerated().map { index, pair in
+            (index, pair.0.rect.midY - pair.1.rect.midY)
+        }.filter { $0.1 > 0.065 }
+        let split = gaps.max(by: { $0.1 < $1.1 })?.0
+        let validSplit = split.flatMap { idx -> Int? in
+            guard idx + 1 >= 2, rows.count - (idx + 1) >= 2 else { return nil }
+            return idx
+        }
+        let colors: [RosterSide: String] = [
+            .friendly: "#22A8F0", .opponent: "#FF683F", .unknown: "#9A9A9A"
+        ]
+        var result: [AutoRosterCandidate] = []
+        var seen = Set<String>()
+        for (index, line) in rows.enumerated() {
+            let clean = line.text
+                .replacingOccurrences(of: #"^[0-9]{1,3}\s+"#, with: "", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard clean.count >= 3 else { continue }
+            let key = clean.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            guard seen.insert(key).inserted else { continue }
+            let side: RosterSide
+            if let validSplit {
+                // Assign top/bottom based on the common friendly-first HUD
+                // layout; users can swap/correct it in the roster view.
+                side = index <= validSplit ? .friendly : .opponent
+            } else { side = .unknown }
+            result.append(AutoRosterCandidate(name: clean, side: side, hex: colors[side]!))
+            if result.count == 24 { break }
+        }
+        return result
+    }
+}
+
 struct MatchRosterView: View {
     @ObservedObject private var roster = MatchRoster.shared
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                Text("الكشف التلقائي — YOLO").font(.headline)
-                Text("يكتشف YOLO الأشخاص، وتحلّل الأداة العلامات الدافئة فوقهم تلقائياً. لا تحتاج إلى إدخال أسماء أو ألوان.")
-                Text("هذا تصنيف تقريبي اعتماداً على الشاشة وليس معرفة مؤكدة بالفرق.")
-                    .font(.footnote).foregroundStyle(.orange)
+                Text("قراءة أسماء الفريقين من لوحة النتائج")
+                    .font(.headline)
+                Text("أثناء بث PS5 افتح لوحة النتائج في MW3، واضغط «قراءة الفريقين» من شريط البث. تُستخدم قراءة النصوص OCR للأسماء، ويستمر YOLO في كشف أجسام اللاعبين بشكل منفصل.")
+                    .font(.footnote)
+                Text(roster.message)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                if roster.reading {
+                    ProgressView("جارٍ قراءة الأسماء...")
+                }
+                Text(roster.autoStatus)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                ForEach(RosterSide.allCases) { side in
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            Text(side.rawValue).font(.headline)
+                            Spacer()
+                            Text("\(roster.names.filter { $0.side == side }.count)")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                        ForEach($roster.names) { $entry in
+                            if entry.side == side {
+                                RosterEntryEditor(entry: $entry) {
+                                    let id = entry.id
+                                    roster.names.removeAll { $0.id == id }
+                                }
+                                .padding(10)
+                                .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
+                            }
+                        }
+                    }
+                    .padding(12)
+                    .background(Color.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 15))
+                }
+                Button("تبديل الفريقين بعد قراءة خاطئة") { roster.swapDetectedSides() }
+                    .buttonStyle(.bordered)
                 Button("بداية مباراة جديدة", role: .destructive) { roster.reset() }
                     .buttonStyle(.bordered)
+                Text("لا يستطيع YOLO تحديد صاحب كل اسم بمجرد قراءة لوحة النتائج. ربط اسم معيّن بمربع لاعب يتطلب ظهور اسمه فوق الجسم في صورة اللعب نفسها.")
+                    .font(.footnote)
+                    .foregroundStyle(.orange)
             }.padding(20)
         }
-        .navigationTitle("تحليل الخصوم")
+        .navigationTitle("قائمة فريقي والخصوم")
         .environment(\.layoutDirection, .rightToLeft)
     }
 }
-
 /// Keep the name/color editor small to avoid complex SwiftUI type-checking in the roster.
 private struct RosterEntryEditor: View {
     @Binding var entry: RosterName
