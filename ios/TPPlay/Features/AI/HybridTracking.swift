@@ -138,3 +138,87 @@ enum PlayerVisualCues {
         return union > 0 && intersection.width * intersection.height / union >= 0.30
     }
 }
+
+
+// Optional identity data derived from on-screen gamer tags. Text recognition
+// and person detection are independent; only a spatially unambiguous exact
+// roster match is allowed to label a YOLO box.
+struct NameplateTextObservation: Sendable {
+    let text: String
+    let box: CGRect     // Normalized bottom-left origin, same as YOLO
+    let confidence: Float
+}
+struct KnownRosterPlayer: Sendable {
+    let name: String
+    let side: RosterSide
+}
+struct LiveNameMatch: Sendable {
+    let name: String
+    let side: RosterSide
+    let body: CGRect
+    let capturedAt: TimeInterval
+}
+enum NameplateRosterAssociation {
+    // Only normalized exact matches, or a uniquely identifying stripped
+    // Activision discriminator (#digits) / clan tag alias. Never fuzzy-guess
+    // "0" vs "O", and never use mere substring containment.
+    private static func normalized(_ name: String) -> String {
+        String(name.lowercased().unicodeScalars.filter {
+            CharacterSet.letters.contains($0) || CharacterSet.decimalDigits.contains($0)
+        })
+    }
+    private static func shortName(_ raw: String) -> String {
+        var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.first == "[", let closing = value.firstIndex(of: "]") {
+            value = String(value[value.index(after: closing)...])
+        }
+        if let hash = value.firstIndex(of: "#") {
+            value = String(value[..<hash])
+        }
+        return normalized(value)
+    }
+    static func match(
+        texts: [NameplateTextObservation],
+        bodies: [CGRect],
+        players: [KnownRosterPlayer],
+        capturedAt: TimeInterval
+    ) -> [LiveNameMatch] {
+        guard capturedAt.isFinite, !texts.isEmpty, !bodies.isEmpty, !players.isEmpty else { return [] }
+        var namesUsed = Set<String>()
+        var bodiesUsed = Set<Int>()
+        var result = [LiveNameMatch]()
+        // Strongest OCR text first, so overlapping text alternatives cannot
+        // attach two different labels to the same on-screen body.
+        for text in texts.sorted(by: { $0.confidence > $1.confidence }) {
+            guard text.confidence >= 0.56, text.box.width > 0,
+                  text.box.height > 0, text.box.minX >= 0,
+                  text.box.minY >= 0, text.box.maxX <= 1,
+                  text.box.maxY <= 1 else { continue }
+            let exact = normalized(text.text)
+            let matching = players.filter {
+                $0.side != .unknown &&
+                (normalized($0.name) == exact ||
+                 (exact.count >= 5 && shortName($0.name) == shortName(text.text) &&
+                  shortName(text.text).count >= 5))
+            }
+            // Require a unique *name and team*; distinct discriminator IDs
+            // with the same displayed handle remain ambiguous.
+            guard matching.count == 1, let entry = matching.first,
+                  !namesUsed.contains(normalized(entry.name)),
+                  let body = VisualBodyAssociation.bestPerson(for: text.box, among: bodies),
+                  let bodyIndex = bodies.firstIndex(of: body),
+                  bodiesUsed.insert(bodyIndex).inserted else { continue }
+            namesUsed.insert(normalized(entry.name))
+            result.append(LiveNameMatch(name: entry.name, side: entry.side,
+                                        body: body, capturedAt: capturedAt))
+        }
+        return result
+    }
+    static func matchingBox(_ a: CGRect, _ b: CGRect) -> Bool {
+        let intersection = a.intersection(b)
+        if intersection.isNull { return false }
+        let area = intersection.width * intersection.height
+        let union = a.width * a.height + b.width * b.height - area
+        return union > 0 && area / union >= 0.22
+    }
+}
