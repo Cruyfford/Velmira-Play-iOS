@@ -60,6 +60,9 @@ final class AIAnalysisState: ObservableObject {
     @Published var showPlayerBoxes = true
     /// Defaults ON: only a confirmed opposing name above a YOLO body can authorize tracking.
     @Published var protectTeammates = true
+    /// Explicit opt-in: colored moving nameplates must belong to a YOLO body.
+    /// Not a replacement for confirmed-opponent OCR when team protection is on.
+    @Published var smartColorTracking = false { didSet { configure() } }
     @Published var precisionMode = true { didSet { configure() } }
     private var persistence = StableDetectionFilter()
     // Visual-only hysteresis: missing one inference frame must not blink the
@@ -77,6 +80,7 @@ final class AIAnalysisState: ObservableObject {
         var colorMode: Bool
         var hybridMode: Bool
         var precisionMode: Bool
+        var smartColorTracking: Bool? // optional to decode older saved profiles
         var colorHue: Double
         var colorTolerance: Double
         var enabled: Bool
@@ -95,7 +99,8 @@ final class AIAnalysisState: ObservableObject {
     @discardableResult
     func saveSettings() -> Bool {
         let value = SavedAISettings(colorMode: colorMode, hybridMode: hybridMode,
-                                    precisionMode: precisionMode, colorHue: colorHue,
+                                    precisionMode: precisionMode,
+                                    smartColorTracking: smartColorTracking, colorHue: colorHue,
                                     colorTolerance: colorTolerance, enabled: enabled,
                                     threshold: threshold, rate: rate)
         guard let data = try? JSONEncoder().encode(value) else { return false }
@@ -117,6 +122,7 @@ final class AIAnalysisState: ObservableObject {
         colorMode = value.colorMode
         hybridMode = value.hybridMode
         precisionMode = value.precisionMode
+        smartColorTracking = value.smartColorTracking ?? false
         colorHue = value.colorHue
         colorTolerance = value.colorTolerance
         enabled = value.enabled
@@ -128,6 +134,7 @@ final class AIAnalysisState: ObservableObject {
         AIFrameAnalyzer.shared.configure(enabled: enabled, threshold: Float(threshold), rate: rate,
             colorMode: colorMode, hybridMode: hybridMode,
             adaptiveBodyMarker: adaptiveBodyMarker,
+            smartColorTracking: smartColorTracking,
             color: ColorTrackingConfiguration(hue: colorHue, tolerance: colorTolerance))
         result = nil
         liveNameMatches = []
@@ -302,6 +309,7 @@ final class AIFrameAnalyzer: @unchecked Sendable {
     private var threshold: Float = 0.30
     private var rate = 3.0
     private var colorMode = false
+    private var smartColorTracking = false
     private var hybridMode = true
     private var adaptiveBodyMarker = true
     private var color = ColorTrackingConfiguration()
@@ -312,9 +320,11 @@ final class AIFrameAnalyzer: @unchecked Sendable {
     private var lastThermal: ProcessInfo.ThermalState = .nominal
     func configure(enabled: Bool, threshold: Float, rate: Double, colorMode: Bool,
                    hybridMode: Bool, adaptiveBodyMarker: Bool,
+                   smartColorTracking: Bool,
                    color: ColorTrackingConfiguration) {
         lock.lock(); defer { lock.unlock() }
         self.colorMode = colorMode
+        self.smartColorTracking = smartColorTracking
         self.hybridMode = hybridMode
         self.adaptiveBodyMarker = adaptiveBodyMarker
         self.color = color
@@ -341,6 +351,8 @@ final class AIFrameAnalyzer: @unchecked Sendable {
         guard now - previousTime >= 1 / effectiveRate else { lock.unlock(); return }
         busy = true; previousTime = now
         let token = generation; let minimum = threshold
+        let useSmartColor = smartColorTracking
+        let selectedColor = color
         lock.unlock()
         let frame = RetainedVideoFrame(pixelBuffer)
         queue.async { [self, frame] in
@@ -356,11 +368,28 @@ final class AIFrameAnalyzer: @unchecked Sendable {
                 // Enemy labels are probabilistic and may be wrong in MWIII.
                 let found = try CoreMLYOLODetector.shared.detect(frame.buffer, threshold: minimum)
                 let people = found.map(\.box)
-                let detections = found.map { candidate in
-                    HumanDetection(id: UUID(), box: candidate.box,
-                                   confidence: candidate.confidence,
-                                   humanSupported: true,
-                                   matchedPersonBox: candidate.box)
+                // In smart-color mode a detected colored region is eligible
+                // ONLY when spatially attached to one unambiguous YOLO body.
+                // Standalone Point/Mark/A/B HUD glyphs cannot create targets.
+                // The normal YOLO overlays remain visible even without a hue hit.
+                let associated: [CGRect]
+                if useSmartColor {
+                    let markers = (try? ColorTargetDetector.detect(
+                        frame.buffer, configuration: selectedColor)) ?? []
+                    associated = SmartColorBodyGate.associatedBodies(
+                        markers: markers, people: people)
+                } else {
+                    associated = []
+                }
+                let detections = found.compactMap { candidate -> HumanDetection? in
+                    if useSmartColor &&
+                        !SmartColorBodyGate.permits(candidate.box, matchedBodies: associated) {
+                        return nil
+                    }
+                    return HumanDetection(id: UUID(), box: candidate.box,
+                                          confidence: candidate.confidence,
+                                          humanSupported: true,
+                                          matchedPersonBox: candidate.box)
                 }
                 report = HumanAnalysis(detections: detections, imageSize: size, capturedAt: now,
                                        milliseconds: (ProcessInfo.processInfo.systemUptime - start) * 1000,
@@ -512,7 +541,25 @@ struct AIAnalysisSettings: View {
                         .font(.footnote).foregroundStyle(.orange)
                     Button("كشف MW3 تلقائي — YOLOv8n المدرّب") { model.prepareHybridTracking() }
                     Toggle("تشغيل تحليل الصورة", isOn: $model.enabled)
-                    Text("YOLOv8n المدرّب على بيانات MW3 يكشف فئة Enemy من صورة اللاعب دون إدخال الاسم أو لون HUD.")
+                    Text("YOLOv8n المدرّب على بيانات MW3 يكشف جسم اللاعب. وضع اللون الذكي الاختياري لا يطارد إشارات HUD المستقلة.")
+                    Toggle("تتبّع لون الاسم فوق جسم اللاعب — وضع ذكي اختياري",
+                           isOn: $model.smartColorTracking)
+                    Text("يستخدم لون الاسم المتحرك فقط إذا أمكن ربطه بجسم لاعب عبر YOLO؛ لا يتتبع علامة Point أو Mark أو A/B مستقلة. ومع حماية فريقي لا يُسمح بتحريك التصويب إلا نحو خصم مؤكّد الاسم. ترك الخيار متوقفاً يبقي سلوك YOLO السابق.")
+                        .font(.footnote)
+                    if model.smartColorTracking {
+                        Text("اختر اللون الظاهر فوق الخصم: 0 أحمر، 0.08 برتقالي، 0.83 وردي/أرجواني تقريباً.")
+                            .font(.caption)
+                        Slider(value: $model.colorHue, in: 0...1, step: 0.01) {
+                            Text("لون الاسم (Hue)")
+                        }
+                        Text("لون الهدف: \(Int(model.colorHue * 360))°")
+                            .font(.caption).monospacedDigit()
+                        Slider(value: $model.colorTolerance, in: 0.01...0.15, step: 0.005) {
+                            Text("سماحية اختلاف اللون")
+                        }
+                        Text("سماحية اللون: \(Int(model.colorTolerance * 360))°")
+                            .font(.caption).monospacedDigit()
+                    }
                     Toggle("إظهار مربعات اللاعبين وتصنيف فريقهم", isOn: $model.showPlayerBoxes)
                     Text("سماوي: لاعب فريقي محمي. برتقالي: خصم قرئ اسمه وتأكد عبر عدة إطارات. أخضر: غير مصنف، لا يُتتبّع في وضع حماية الفريق. القرب نسبي وليس بالمتر.")
                         .font(.footnote)
@@ -572,6 +619,13 @@ struct AIAnalysisSettings: View {
                             else {
                                 Text("أجسام الأشخاص المكتشفة: \(result.visiblePlayerBoxes.count)")
                                 Text("أهداف التتبّع المؤهلة: \(result.detections.count)")
+                                if model.smartColorTracking {
+                                    Text("أجسام مطابقة للون قرب الاسم: \(result.detections.count)")
+                                    if result.detections.isEmpty && !result.visiblePlayerBoxes.isEmpty {
+                                        Text("لم يتطابق لون الاسم مع أي جسم؛ راجع اللون والسماحية. لا يتم اختيار نقاط HUD.")
+                                            .font(.footnote).foregroundStyle(.orange)
+                                    }
+                                }
                                 Text("زمن التحليل: \(Int(result.milliseconds)) ms")
                                 if ProcessInfo.processInfo.systemUptime - result.capturedAt >= 0.8 {
                                     Text("لا توجد نتيجة حديثة؛ الإطارات القديمة مخفية.")
