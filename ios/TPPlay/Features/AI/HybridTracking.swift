@@ -266,6 +266,23 @@ enum NameplateRosterAssociation {
 }
 
 
+/// Optional smart-color selection: a color patch must be attached to a
+/// visible YOLO person, never to a free-standing Point, Mark, A/B HUD icon.
+/// A geometric association does NOT establish enemy team identity: that remains
+/// the responsibility of TeamTargetSafety and confirmed roster names.
+enum SmartColorBodyGate {
+    static func associatedBodies(markers: [CGRect], people: [CGRect]) -> [CGRect] {
+        HybridTargetFusion.associate(markers: markers, people: people)
+            .compactMap(\.matchedPersonBox)
+    }
+
+    static func permits(_ body: CGRect, matchedBodies: [CGRect]) -> Bool {
+        // Exact YOLO geometry prevents a neighboring player from inheriting a
+        // colored marker during overlap. Fusion already rejects ambiguity.
+        matchedBodies.contains(body)
+    }
+}
+
 /// Safety boundary between visual YOLO detections and controller movement.
 /// YOLO's single "Enemy" class is *not* proof a person is on the other team.
 /// The conservative default permits ONLY bodies with a recent twice-confirmed
