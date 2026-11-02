@@ -143,6 +143,24 @@ require(HybridTargetFusion.associate(markers: [nameplate, nameplate], people: [b
         "Duplicate name fragments produce one target per body")
 let tallPatch = CGRect(x: 0.44, y: 0.68, width: 0.12, height: 0.15)
 require(HybridTargetFusion.associate(markers: [tallPatch], people: [body]).isEmpty, "Reject large background color patch")
+// Smart-color follows a colored nameplate only where YOLO finds a person.
+// A purple HUD point or A/B objective marker anywhere else is ignored.
+let floatingHUD = CGRect(x: 0.10, y: 0.85, width: 0.045, height: 0.025)
+let matchedColorBodies = SmartColorBodyGate.associatedBodies(
+    markers: [floatingHUD, nameplate], people: [body])
+require(matchedColorBodies == [body],
+        "Smart color must ignore HUD Point/Mark/A/B indicators away from a person")
+require(SmartColorBodyGate.permits(body, matchedBodies: matchedColorBodies),
+        "A colored name above a YOLO player can select that body")
+require(SmartColorBodyGate.associatedBodies(markers: [floatingHUD], people: [body]).isEmpty,
+        "Static UI color without a connected person name cannot enable follow")
+require(!SmartColorBodyGate.permits(overlappingBody, matchedBodies: matchedColorBodies),
+        "A nearby player cannot inherit another player's colored label")
+require(SmartColorBodyGate.associatedBodies(markers: [nameplate],
+                                            people: [body, overlappingBody]).isEmpty,
+        "Overlapping players must be rejected, not guessed")
+print("Smart-color body-gated tracking and fixed HUD rejection tests passed")
+
 let rawReport = HumanAnalysis(detections: fused, imageSize: CGSize(width: 1920, height: 1080),
                               capturedAt: 40, milliseconds: 5, error: nil)
 let hybridSample = rawReport.trackingSample(colorMode: true, hybridMode: true)
