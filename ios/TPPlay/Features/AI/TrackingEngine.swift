@@ -2,6 +2,13 @@ import Foundation
 
 struct AssistanceConfiguration: Codable, Equatable {
     var tracking = true
+    // Optional for backward compatibility with saved settings from earlier releases.
+    // Never turn the user's controller assistance on implicitly.
+    var trackingWithoutL2: Bool? = nil
+    var fullScreenAcquisition: Bool? = nil
+    /// Faster correction with a short lead *inside a currently visible body*.
+    /// Optional so previous users' saved JSON decodes unchanged.
+    var strongLock: Bool? = nil
     var radius = 0.22
     var strength = 1.2
     var maxStick = 0.35
@@ -57,6 +64,11 @@ struct TrackingEngine {
     private var previousTick: TimeInterval?
     private var smoothX = 0.0
     private var smoothY = 0.0
+    // Motion is estimated only when the analyzer gives a genuinely NEW frame.
+    // No prediction continues without a visible confirmed detection.
+    private var lastObservedPoint: CGPoint?
+    private var lastObservedAt: TimeInterval?
+    private var lastObservedID: UUID?
     private var mustRelease = true
 
     mutating func reset() { self = TrackingEngine() }
@@ -88,32 +100,43 @@ struct TrackingEngine {
             return out
         }
         defer { previousL2 = aim; previousR2 = shoot; previousTick = now }
-        guard aim else {
-            locked = nil; lockedID = nil; blockedUntilRelease = false; scopeStarted = nil; swapAt = nil
-            quickFired = false; smoothX = 0; smoothY = 0
-            return out
-        }
-        if !previousL2 {
-            scopeStarted = c.quickScope ? now : nil
-            quickFired = false
-        }
-        if !c.quickScope { scopeStarted = nil }
-        if !c.silentShot { swapAt = nil }
-        if c.silentShot && shoot && !previousR2 { swapAt = now + clamp(c.switchDelay, 0.03, 1) }
-        if let start = scopeStarted {
-            let fireStart = start + clamp(c.scopeDelay, 0.05, 2)
-            let fireEnd = fireStart + clamp(c.shotDuration, 0.03, 0.3)
-            if now >= fireStart && now < fireEnd {
-                out.fire = true
-                if !quickFired {
-                    quickFired = true
-                    if c.silentShot { swapAt = now + clamp(c.switchDelay, 0.03, 1) }
+        let continuous = c.trackingWithoutL2 == true
+        if !aim {
+            // Weapon macros remain strictly L2-activated, even in continuous
+            // target-lock mode. Releasing L2 does not drop the visual lock
+            // while the user explicitly enables continuous tracking.
+            scopeStarted = nil; swapAt = nil; quickFired = false
+            if !continuous {
+                locked = nil; lockedID = nil; blockedUntilRelease = false
+                smoothX = 0; smoothY = 0
+                lastObservedPoint = nil; lastObservedAt = nil; lastObservedID = nil
+                return out
+            }
+        } else {
+            if !previousL2 {
+                scopeStarted = c.quickScope ? now : nil
+                quickFired = false
+            }
+            if !c.quickScope { scopeStarted = nil }
+            if !c.silentShot { swapAt = nil }
+            if c.silentShot && shoot && !previousR2 {
+                swapAt = now + clamp(c.switchDelay, 0.03, 1)
+            }
+            if let start = scopeStarted {
+                let fireStart = start + clamp(c.scopeDelay, 0.05, 2)
+                let fireEnd = fireStart + clamp(c.shotDuration, 0.03, 0.3)
+                if now >= fireStart && now < fireEnd {
+                    out.fire = true
+                    if !quickFired {
+                        quickFired = true
+                        if c.silentShot { swapAt = now + clamp(c.switchDelay, 0.03, 1) }
+                    }
                 }
             }
-        }
-        if let swap = swapAt {
-            out.switchWeapon = now >= swap && now < swap + clamp(c.switchDuration, 0.03, 0.3)
-            if now >= swap + clamp(c.switchDuration, 0.03, 0.3) { swapAt = nil }
+            if let swap = swapAt {
+                out.switchWeapon = now >= swap && now < swap + clamp(c.switchDuration, 0.03, 0.3)
+                if now >= swap + clamp(c.switchDuration, 0.03, 0.3) { swapAt = nil }
+            }
         }
         let manual = hypot(rawX, rawY) >= clamp(c.manualOverride, 0.1, 1)
         if c.tracking && !manual && !blockedUntilRelease,
@@ -129,8 +152,11 @@ struct TrackingEngine {
                     box.minX >= 0 && box.minY >= 0 &&
                     box.maxX <= 1 && box.maxY <= 1
             }
+            // Allow an explicitly selected full-screen search. Keep the
+            // current verified ID regardless of where it moves on screen.
             let acquisition = visible.filter {
-                distance(point(sample.boxes[$0], sample.colorMode, c), center) <=
+                c.fullScreenAcquisition == true ||
+                    distance(point(sample.boxes[$0], sample.colorMode, c), center) <=
                     clamp(c.radius, 0.05, 0.5)
             }
             func identity(_ index: Int) -> UUID? {
@@ -165,8 +191,11 @@ struct TrackingEngine {
                         }
                         // If no nearby confirmed player exists, require a new
                         // L2 press instead of jumping across the screen.
-                        if selected == nil { blockedUntilRelease = true }
-                    } else {
+                        // Legacy L2 mode requires a release. Continuous mode
+                        // can acquire again on a later *fresh* observation,
+                        // never on the very frame where the ID was lost.
+                        if selected == nil && !continuous { blockedUntilRelease = true }
+                    } else if !continuous {
                         blockedUntilRelease = true
                     }
                 }
@@ -181,22 +210,58 @@ struct TrackingEngine {
                 let box = sample.boxes[selected]
                 locked = box; lockedID = identity(selected); lastSeen = sample.capturedAt
                 let target = point(box, sample.colorMode, c)
-                out.target = target
-                let dx = target.x - 0.5, dy = target.y - 0.5
+                let currentID = identity(selected)
+                var commandPoint = target
+                if c.strongLock == true && !sample.colorMode,
+                   currentID != nil, currentID == lastObservedID,
+                   let old = lastObservedPoint, let oldTime = lastObservedAt,
+                   sample.capturedAt > oldTime {
+                    let sampleDelta = sample.capturedAt - oldTime
+                    if sampleDelta >= 0.03 && sampleDelta <= 0.35 {
+                        // Bounded lead reduces visual-frame lag for a moving
+                        // visible player. Never aim beyond the visible body.
+                        let lead = min(0.045, sampleDelta * 0.5)
+                        let vx = clamp((target.x - old.x) / sampleDelta, -1.5, 1.5)
+                        let vy = clamp((target.y - old.y) / sampleDelta, -1.5, 1.5)
+                        let left = box.minX + box.width * 0.10
+                        let right = box.maxX - box.width * 0.10
+                        let top = 1 - box.maxY + box.height * 0.10
+                        let bottom = 1 - box.minY - box.height * 0.10
+                        commandPoint = CGPoint(
+                            x: clamp(target.x + vx * lead, left, right),
+                            y: clamp(target.y + vy * lead, top, bottom))
+                    }
+                }
+                if lastObservedID != currentID ||
+                   lastObservedAt == nil ||
+                   sample.capturedAt > lastObservedAt! {
+                    lastObservedPoint = target
+                    lastObservedAt = sample.capturedAt
+                    lastObservedID = currentID
+                }
+                out.target = commandPoint
+                let dx = commandPoint.x - 0.5, dy = commandPoint.y - 0.5
                 let cap = clamp(c.maxStick, 0.02, 0.8)
-                let desiredX = abs(dx) < c.deadZone ? 0 : clamp(dx * clamp(c.strength, 0.1, 5), -cap, cap)
-                let desiredY = abs(dy) < c.deadZone ? 0 : clamp(dy * clamp(c.strength, 0.1, 5), -cap, cap) * (c.invertY ? -1 : 1)
+                let gainX = c.strongLock == true && abs(dx) < 0.045 ? 1.7 : clamp(c.strength, 0.1, 5)
+                let gainY = c.strongLock == true && abs(dy) < 0.045 ? 1.7 : clamp(c.strength, 0.1, 5)
+                let desiredX = abs(dx) < c.deadZone ? 0 : clamp(dx * gainX, -cap, cap)
+                let desiredY = abs(dy) < c.deadZone ? 0 : clamp(dy * gainY, -cap, cap) * (c.invertY ? -1 : 1)
                 let dt = clamp(now - (previousTick ?? now - 1 / 60), 0, 0.1)
                 let alpha = 1 - exp(-dt / clamp(c.response, 0.02, 0.5))
                 smoothX += (desiredX - smoothX) * alpha
                 smoothY += (desiredY - smoothY) * alpha
                 out.x += smoothX; out.y += smoothY
-            } else { smoothX = 0; smoothY = 0 }
+            } else {
+                smoothX = 0; smoothY = 0
+                lastObservedPoint = nil; lastObservedAt = nil; lastObservedID = nil
+            }
         } else {
             smoothX = 0; smoothY = 0
-            if manual { locked = nil; lockedID = nil }
+            // Manual stick input always wins, but a short manual adjustment
+            // should not throw away the identity. No automatic input is sent
+            // during the override; expiry is checked when detection resumes.
         }
-        if c.recoil && (shoot || out.fire) && !manual {
+        if c.recoil && aim && (shoot || out.fire) && !manual {
             out.x += clamp(c.recoilX, -0.3, 0.3)
             out.y += clamp(c.recoilY, -0.3, 0.3)
         }

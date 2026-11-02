@@ -105,6 +105,28 @@ persistence.reset()
 require(persistence.update([markA], at: 30).isEmpty, "Reset removes prior state")
 print("StableDetectionFilter verification checks passed")
 
+// Player rectangle rendering does not depend on confirmed enemy names, and
+// brief visual holding cannot ever authorize an automatic tracking target.
+var overlayHold = PlayerOverlayBoxHold()
+let overlayRect = CGRect(x: 0.32, y: 0.24, width: 0.18, height: 0.45)
+require(overlayHold.accept([overlayRect], capturedAt: 14) == [overlayRect],
+        "An unclassified YOLO player is visible immediately")
+require(overlayHold.accept([], capturedAt: 14.22) == [overlayRect],
+        "One missing YOLO frame does not blink the overlay")
+require(overlayHold.accept([], capturedAt: 14.46).isEmpty,
+        "Old visual rectangles expire after a brief gap")
+_ = overlayHold.accept([overlayRect], capturedAt: 15)
+require(overlayHold.accept([], capturedAt: 15.10, hasError: true).isEmpty,
+        "Model load failure cannot leave a ghost rectangle")
+require(overlayHold.accept([], capturedAt: 15.12).isEmpty,
+        "Failed model remains visually empty")
+let emptySafeReport = HumanAnalysis(detections: [], imageSize: CGSize(width: 1920, height: 1080),
+                                    capturedAt: 16, milliseconds: 5, error: nil,
+                                    visiblePlayerBoxes: [overlayRect])
+require(TeamTargetSafety.trackingSample(from: emptySafeReport, names: [], roster: [],
+                                        now: 16.1).boxes.isEmpty,
+        "Visible unknown boxes must never become automatic targets")
+
 // Hybrid fusion: color alone or a person alone must never steer in hybrid mode.
 let body = CGRect(x: 0.40, y: 0.30, width: 0.20, height: 0.35)
 let nameplate = CGRect(x: 0.44, y: 0.68, width: 0.12, height: 0.025)
@@ -121,6 +143,24 @@ require(HybridTargetFusion.associate(markers: [nameplate, nameplate], people: [b
         "Duplicate name fragments produce one target per body")
 let tallPatch = CGRect(x: 0.44, y: 0.68, width: 0.12, height: 0.15)
 require(HybridTargetFusion.associate(markers: [tallPatch], people: [body]).isEmpty, "Reject large background color patch")
+// Smart-color follows a colored nameplate only where YOLO finds a person.
+// A purple HUD point or A/B objective marker anywhere else is ignored.
+let floatingHUD = CGRect(x: 0.10, y: 0.85, width: 0.045, height: 0.025)
+let matchedColorBodies = SmartColorBodyGate.associatedBodies(
+    markers: [floatingHUD, nameplate], people: [body])
+require(matchedColorBodies == [body],
+        "Smart color must ignore HUD Point/Mark/A/B indicators away from a person")
+require(SmartColorBodyGate.permits(body, matchedBodies: matchedColorBodies),
+        "A colored name above a YOLO player can select that body")
+require(SmartColorBodyGate.associatedBodies(markers: [floatingHUD], people: [body]).isEmpty,
+        "Static UI color without a connected person name cannot enable follow")
+require(!SmartColorBodyGate.permits(overlappingBody, matchedBodies: matchedColorBodies),
+        "A nearby player cannot inherit another player's colored label")
+require(SmartColorBodyGate.associatedBodies(markers: [nameplate],
+                                            people: [body, overlappingBody]).isEmpty,
+        "Overlapping players must be rejected, not guessed")
+print("Smart-color body-gated tracking and fixed HUD rejection tests passed")
+
 let rawReport = HumanAnalysis(detections: fused, imageSize: CGSize(width: 1920, height: 1080),
                               capturedAt: 40, milliseconds: 5, error: nil)
 let hybridSample = rawReport.trackingSample(colorMode: true, hybridMode: true)
@@ -232,3 +272,254 @@ require(PlayerVisualCues.proximity(for: CGRect(x: 0, y: 0.2, width: 0.1, height:
         "Small visible bodies are classified as visually distant")
 print("Fast identity retention, near handoff, proximity checks passed")
 
+
+
+// Continuous-lock regression tests: without L2, full-screen acquisition,
+// lock identity, brief disappearance, manual input and macros.
+var continuous = TrackingEngine()
+var continuousConfig = AssistanceConfiguration()
+continuousConfig.trackingWithoutL2 = true
+continuousConfig.fullScreenAcquisition = true
+continuousConfig.radius = 0.08
+continuousConfig.pointY = 0.5
+continuousConfig.switchOnLoss = true
+continuousConfig.lossDelay = 0.5
+continuousConfig.staleAfter = 0.35
+continuousConfig.quickScope = true
+continuousConfig.silentShot = true
+let lockA = UUID(), lockB = UUID()
+let farBody = CGRect(x: 0.83, y: 0.30, width: 0.07, height: 0.28)
+let movedBody2 = CGRect(x: 0.71, y: 0.30, width: 0.07, height: 0.28)
+let unrelatedBody = CGRect(x: 0.10, y: 0.30, width: 0.07, height: 0.28)
+func continuousStep(_ t: Double, l2: Double = 0, r2: Double = 0, rawX: Double = 0,
+                    boxes: [CGRect], ids: [UUID], capturedAt: Double? = nil) -> AssistanceOutput {
+    continuous.step(now: t, armed: true, l2: l2, r2: r2, rawX: rawX, rawY: 0,
+                    sample: TrackingSample(boxes: boxes, capturedAt: capturedAt ?? t,
+                                           colorMode: false, targetIDs: ids),
+                    config: continuousConfig)
+}
+_ = continuousStep(200.00, boxes: [], ids: [])
+let withoutL2 = continuousStep(200.10, boxes: [farBody], ids: [lockA])
+require(withoutL2.target != nil && withoutL2.x > 0,
+        "Explicit continuous mode acquires full-screen target without pressing L2")
+require(!withoutL2.fire && !withoutL2.switchWeapon,
+        "No-L2 tracking cannot activate L2-only weapon macros")
+let movedWithoutL2 = continuousStep(200.20, boxes: [movedBody2, unrelatedBody],
+                                    ids: [lockA, lockB])
+require(movedWithoutL2.target != nil && movedWithoutL2.target!.x > 0.70,
+        "Keep the same stable identity after movement beyond the acquisition radius")
+let underL2 = continuousStep(200.25, l2: 1, boxes: [movedBody2, unrelatedBody],
+                             ids: [lockA, lockB])
+require(underL2.target != nil && underL2.target!.x > 0.70,
+        "Pressing L2 does not change the selected identity")
+let afterL2 = continuousStep(200.30, boxes: [movedBody2, unrelatedBody],
+                             ids: [lockA, lockB])
+require(afterL2.target != nil && afterL2.target!.x > 0.70,
+        "Releasing L2 preserves continuous lock")
+require(continuousStep(200.34, rawX: 0.9, boxes: [movedBody2], ids: [lockA]).x == 0.9,
+        "Manual right-stick control always wins")
+require(continuousStep(200.38, boxes: [movedBody2, unrelatedBody],
+                       ids: [lockA, lockB]).target!.x > 0.70,
+        "Manual adjustment does not discard the locked identity")
+require(continuousStep(200.42, boxes: [unrelatedBody], ids: [lockB]).target == nil,
+        "Do not switch to an unrelated candidate during brief occlusion")
+require(continuousStep(200.50, boxes: [movedBody2], ids: [lockA]).target != nil,
+        "Reappearing confirmed player is reacquired inside loss grace period")
+require(continuousStep(200.95, boxes: [movedBody2], ids: [lockA],
+                       capturedAt: 200.50).target == nil,
+        "Stale video never steers the camera")
+require(continuousStep(201.10, boxes: [], ids: []).target == nil,
+        "Disappearances do not yield phantom targets")
+require(continuousStep(201.20, boxes: [unrelatedBody], ids: [lockB]).target != nil,
+        "Continuous mode can reacquire a new fresh target without L2 release")
+require(continuousStep(201.30, r2: 1, boxes: [unrelatedBody], ids: [lockB]).switchWeapon == false,
+        "R2 without L2 does not activate silent-shot macro")
+var legacyNoL2 = TrackingEngine()
+var legacyConfig = AssistanceConfiguration()
+legacyConfig.pointY = 0.5
+_ = legacyNoL2.step(now: 300, armed: true, l2: 0, r2: 0, rawX: 0, rawY: 0,
+                    sample: nil, config: legacyConfig)
+require(legacyNoL2.step(now: 300.10, armed: true, l2: 0, r2: 0, rawX: 0, rawY: 0,
+                       sample: TrackingSample(boxes: [farBody], capturedAt: 300.10,
+                                              colorMode: false), config: legacyConfig).target == nil,
+        "Existing users retain traditional L2-only behavior by default")
+let archived = try JSONEncoder().encode(legacyConfig)
+let migrated = try JSONDecoder().decode(AssistanceConfiguration.self, from: archived)
+require(migrated.trackingWithoutL2 == nil && migrated.fullScreenAcquisition == nil,
+        "Optional continuous mode flags preserve decoding of old settings")
+print("Continuous target-lock tests passed")
+
+
+// Strong-lock regression: bounded target lead based only on new, visible,
+// confirmed samples. No movement on missing/stale frames or manual override.
+var strongEngine = TrackingEngine()
+var strongConfig = AssistanceConfiguration()
+strongConfig.trackingWithoutL2 = true
+strongConfig.strongLock = true
+strongConfig.fullScreenAcquisition = true
+strongConfig.pointX = 0.5
+strongConfig.pointY = 0.5
+strongConfig.strength = 3.2
+strongConfig.maxStick = 0.72
+strongConfig.response = 0.025
+strongConfig.staleAfter = 0.28
+let strongID = UUID()
+func strongStep(_ time: Double, _ rect: CGRect?, at frameTime: Double? = nil,
+                rawX: Double = 0, l2: Double = 0) -> AssistanceOutput {
+    strongEngine.step(now: time, armed: true, l2: l2, r2: 0,
+                      rawX: rawX, rawY: 0,
+                      sample: TrackingSample(boxes: rect.map { [$0] } ?? [],
+                                             capturedAt: frameTime ?? time,
+                                             colorMode: false,
+                                             targetIDs: rect.map { _ in [strongID] } ?? []),
+                      config: strongConfig)
+}
+let strongBoxA = CGRect(x: 0.54, y: 0.25, width: 0.18, height: 0.4)
+let strongBoxB = CGRect(x: 0.60, y: 0.25, width: 0.18, height: 0.4)
+_ = strongStep(400, nil)  // Trigger release required for arming.
+let startStrong = strongStep(400.1, strongBoxA)
+require(startStrong.target != nil && startStrong.x > 0,
+        "Strong mode acquires verified target without L2")
+let movingStrong = strongStep(400.2, strongBoxB)
+require(movingStrong.target != nil,
+        "Strong mode retains identity on a fresh moving target")
+require(movingStrong.target!.x > strongBoxB.midX,
+        "Strong lock applies short motion lead towards visible movement")
+require(movingStrong.target!.x <= strongBoxB.maxX,
+        "Strong lock lead must never exceed the currently visible target box")
+let sameFrameStrong = strongStep(400.22, strongBoxB, at: 400.2)
+require(sameFrameStrong.target != nil &&
+        abs(sameFrameStrong.target!.x - strongBoxB.midX) < 0.0001,
+        "Repeated same frame must not extrapolate as if it were new evidence")
+let manualStrong = strongStep(400.25, strongBoxB, rawX: 0.95)
+require(manualStrong.target == nil && manualStrong.x == 0.95,
+        "Manual control must override stronger lock")
+let disappearedStrong = strongStep(400.28, nil)
+require(disappearedStrong.target == nil && disappearedStrong.x == 0,
+        "Never steer toward a missing target in strong mode")
+let oldStrong = strongStep(401.0, strongBoxB, at: 400.2)
+require(oldStrong.target == nil && oldStrong.x == 0,
+        "Never use outdated stream observations in strong mode")
+var oldSettings = AssistanceConfiguration()
+let oldSettingsData = try JSONEncoder().encode(oldSettings)
+oldSettings = try JSONDecoder().decode(AssistanceConfiguration.self, from: oldSettingsData)
+require(oldSettings.strongLock == nil,
+        "Older saved settings decode safely without enabling strong lock")
+print("Strong verified target-lock tests passed")
+
+
+// Nameplate OCR ↔ YOLO spatial association (pure geometry; no Vision service).
+// MW3 shows the same handle above the player and in the scoreboard list.
+let bodyFriendly = CGRect(x: 0.16, y: 0.28, width: 0.15, height: 0.34)
+let bodyEnemy = CGRect(x: 0.66, y: 0.25, width: 0.16, height: 0.36)
+let labelFriendly = CGRect(x: 0.18, y: 0.63, width: 0.11, height: 0.022)
+let labelEnemy = CGRect(x: 0.675, y: 0.62, width: 0.12, height: 0.024)
+let knownRoster = [
+    KnownRosterPlayer(name: "CRUYFFORD#12345", side: .friendly),
+    KnownRosterPlayer(name: "[RED]Danger#99887", side: .opponent)
+]
+func labelFixture(_ text: String, _ box: CGRect, _ confidence: Float = 0.95) -> NameplateTextObservation {
+    NameplateTextObservation(text: text, box: box, confidence: confidence)
+}
+let matchedNames = NameplateRosterAssociation.match(
+    texts: [labelFixture("CRUYFFORD", labelFriendly), labelFixture("Danger", labelEnemy)],
+    bodies: [bodyFriendly, bodyEnemy], players: knownRoster, capturedAt: 1000)
+require(matchedNames.count == 2, "Both scoreboard names appear as confirmed YOLO labels")
+require(matchedNames.contains { $0.side == .friendly && $0.body == bodyFriendly },
+        "Friendly nameplate belongs only to the friendly body")
+require(matchedNames.contains { $0.side == .opponent && $0.body == bodyEnemy },
+        "Enemy nameplate belongs only to the enemy body")
+let unknownLabel = NameplateRosterAssociation.match(
+    texts: [labelFixture("NotInScoreboard", labelEnemy)],
+    bodies: [bodyEnemy], players: knownRoster, capturedAt: 1000)
+require(unknownLabel.isEmpty, "No invented names for unknown players")
+let textTooFar = NameplateRosterAssociation.match(
+    texts: [labelFixture("Danger", CGRect(x: 0.03, y: 0.90, width: 0.08, height: 0.02))],
+    bodies: [bodyEnemy], players: knownRoster, capturedAt: 1000)
+require(textTooFar.isEmpty, "A remote HUD label must not attach to a YOLO box")
+let duplicateHandle = NameplateRosterAssociation.match(
+    texts: [labelFixture("Danger", labelEnemy)],
+    bodies: [bodyEnemy], players: knownRoster + [
+        KnownRosterPlayer(name: "[ABC]Danger#77777", side: .friendly)
+    ], capturedAt: 1000)
+require(duplicateHandle.isEmpty, "Identical gamer tags in both teams must remain unclassified")
+let weakLabel = NameplateRosterAssociation.match(
+    texts: [labelFixture("Danger", labelEnemy, 0.21)],
+    bodies: [bodyEnemy], players: knownRoster, capturedAt: 1000)
+require(weakLabel.isEmpty, "Low-confidence text must not be treated as identity")
+require(NameplateRosterAssociation.matchingBox(bodyFriendly, bodyFriendly),
+        "Stable YOLO body retains an on-screen name")
+require(!NameplateRosterAssociation.matchingBox(bodyFriendly, bodyEnemy),
+        "On-screen name must not drift to another YOLO player")
+print("Nameplate-roster association checks passed")
+
+// STRICT TEAM SAFETY: the controller input must NEVER use raw YOLO enemy
+// predictions as permission to steer toward a teammate or unknown player.
+let safeFriendly = HumanDetection(id: UUID(), box: bodyFriendly, confidence: 0.95,
+                                  humanSupported: true, matchedPersonBox: bodyFriendly)
+let safeEnemy = HumanDetection(id: UUID(), box: bodyEnemy, confidence: 0.95,
+                               humanSupported: true, matchedPersonBox: bodyEnemy)
+let safetyReport = HumanAnalysis(detections: [safeFriendly, safeEnemy],
+                                  imageSize: CGSize(width: 1920, height: 1080),
+                                  capturedAt: 1000, milliseconds: 20, error: nil)
+func safeInput(_ report: HumanAnalysis, _ labels: [LiveNameMatch],
+               roster: [KnownRosterPlayer] = knownRoster,
+               now: Double = 1000.04, strict: Bool = true) -> TrackingSample {
+    TeamTargetSafety.trackingSample(from: report, names: labels, roster: roster,
+                                   now: now, requireConfirmedOpponent: strict)
+}
+require(safeInput(safetyReport, []).boxes.isEmpty,
+        "A YOLO 'Enemy' prediction is not proof of team identity")
+let onlyFriend = safeInput(safetyReport, matchedNames.filter { $0.side == .friendly })
+require(onlyFriend.boxes.isEmpty,
+        "Teammate is never automatically followed even if YOLO detects them")
+let confirmedEnemy = safeInput(safetyReport, matchedNames)
+require(confirmedEnemy.boxes == [bodyEnemy],
+        "Only the verified opponent box reaches the controller path")
+require(confirmedEnemy.targetIDs == [safeEnemy.id],
+        "Safe tracking keeps stable YOLO identity for only the opponent")
+let friendKnownButOpponentMissing = safeInput(safetyReport, matchedNames.filter { $0.side == .friendly },
+                                              strict: false)
+require(friendKnownButOpponentMissing.boxes == [bodyEnemy],
+        "Manual relaxed mode still rejects known teammates")
+let changedRoster = safeInput(safetyReport, matchedNames,
+                               roster: [KnownRosterPlayer(name: "CRUYFFORD#12345", side: .opponent)])
+require(changedRoster.boxes.isEmpty,
+        "A changed scoreboard invalidates old friendly/enemy assignments")
+let twoLabelsOneBody = [
+    LiveNameMatch(name: "CRUYFFORD#12345", side: .friendly, body: bodyEnemy, capturedAt: 1000),
+    LiveNameMatch(name: "[RED]Danger#99887", side: .opponent, body: bodyEnemy, capturedAt: 1000)
+]
+require(safeInput(safetyReport, twoLabelsOneBody).boxes.isEmpty,
+        "Conflicting nameplates over the same body cannot authorize tracking")
+let oldConfirmedLabel = [LiveNameMatch(name: "[RED]Danger#99887", side: .opponent,
+                                       body: bodyEnemy, capturedAt: 997)]
+require(safeInput(safetyReport, oldConfirmedLabel).boxes.isEmpty,
+        "Expired nameplate cannot authorize a fresh YOLO frame")
+let ambiguousDoubleBody = HumanAnalysis(
+    detections: [
+        HumanDetection(id: UUID(), box: bodyEnemy, confidence: 0.9,
+                       humanSupported: true, matchedPersonBox: bodyEnemy),
+        HumanDetection(id: UUID(), box: bodyEnemy.offsetBy(dx: 0.007, dy: 0),
+                       confidence: 0.84, humanSupported: true,
+                       matchedPersonBox: bodyEnemy.offsetBy(dx: 0.007, dy: 0))
+    ], imageSize: CGSize(width: 1920, height: 1080),
+    capturedAt: 1000, milliseconds: 20, error: nil)
+require(safeInput(ambiguousDoubleBody, matchedNames.filter { $0.side == .opponent }).boxes.isEmpty,
+        "Duplicate/overlapping YOLO people cannot acquire one nameplate")
+require(safeInput(safetyReport, matchedNames, now: 1001.0).boxes.isEmpty,
+        "No movement on expired YOLO frame even if labels exist")
+print("Teammate exclusion and strict opponent-only tracking tests passed")
+
+
+require(AdaptiveAnalysisBudget.limit(requested: 24, averageInferenceMS: 0, thermalLevel: .nominal) == 24,
+        "Requested 24 analysis FPS retained on cool device")
+require(AdaptiveAnalysisBudget.limit(requested: 24, averageInferenceMS: 100, thermalLevel: .nominal) <= 7.01,
+        "Heavy ML inference throttles frame scheduling")
+require(AdaptiveAnalysisBudget.limit(requested: 24, averageInferenceMS: 40, thermalLevel: .serious) <= 3,
+        "Serious thermal pressure caps neural processing")
+require(AdaptiveAnalysisBudget.limit(requested: 24, averageInferenceMS: 40, thermalLevel: .critical) == 1,
+        "Critical thermal pressure forces minimal rate")
+require(AdaptiveAnalysisBudget.limit(requested: .nan, averageInferenceMS: 100, thermalLevel: .nominal) == 1,
+        "Invalid scheduling input cannot divide by zero")
+print("Adaptive analysis thermal tests passed")

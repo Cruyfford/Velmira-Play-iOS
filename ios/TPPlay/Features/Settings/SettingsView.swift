@@ -9,6 +9,10 @@ private struct VelmiraPortableAI: Codable {
     var hybridMode: Bool
     var adaptiveBodyMarker: Bool
     var precisionMode: Bool
+    /// Optional to retain compatibility with older version-1 JSON packages.
+    var protectTeammates: Bool?
+    /// Optional so version-1 JSON files remain compatible.
+    var smartColorTracking: Bool?
     var colorHue: Double
     var colorTolerance: Double
     var enabled: Bool
@@ -96,6 +100,8 @@ private enum VelmiraSettingsTransfer {
             ai: VelmiraPortableAI(
                 colorMode: ai.colorMode, hybridMode: ai.hybridMode,
                 adaptiveBodyMarker: ai.adaptiveBodyMarker, precisionMode: ai.precisionMode,
+                protectTeammates: ai.protectTeammates,
+                smartColorTracking: ai.smartColorTracking,
                 colorHue: ai.colorHue, colorTolerance: ai.colorTolerance,
                 enabled: ai.enabled, threshold: ai.threshold, rate: ai.rate),
             stream: VelmiraPortableStream(
@@ -152,6 +158,8 @@ private enum VelmiraSettingsTransfer {
         ai.hybridMode = profile.ai.hybridMode
         ai.adaptiveBodyMarker = profile.ai.adaptiveBodyMarker
         ai.precisionMode = profile.ai.precisionMode
+        ai.protectTeammates = profile.ai.protectTeammates ?? true
+        ai.smartColorTracking = profile.ai.smartColorTracking ?? false
         ai.colorHue = profile.ai.colorHue
         ai.colorTolerance = profile.ai.colorTolerance
         ai.threshold = profile.ai.threshold
@@ -214,7 +222,7 @@ private enum VelmiraSettingsTransfer {
         try check(p.ai.colorHue, 0...1, "لون العلامة")
         try check(p.ai.colorTolerance, 0.01...0.15, "سماحية اللون")
         try check(p.ai.threshold, 0.2...0.95, "ثقة الذكاء الاصطناعي")
-        guard [3.0, 5.0, 8.0].contains(p.ai.rate) else {
+        guard [3.0, 5.0, 8.0, 12.0, 20.0, 24.0].contains(p.ai.rate) else {
             throw VelmiraImportError.invalidValue("معدل التحليل")
         }
         guard [720, 1080].contains(p.stream.resolution),
@@ -260,7 +268,7 @@ private enum VelmiraSettingsTransfer {
                   [720, 1080].contains(game.resolution),
                   [30, 60].contains(game.fps),
                   (2_000...100_000).contains(game.bitrate),
-                  [3.0, 5.0, 8.0].contains(game.rate) else {
+                  [3.0, 5.0, 8.0, 12.0, 20.0, 24.0].contains(game.rate) else {
                 throw VelmiraImportError.invalidValue("ملف إعدادات اللعبة")
             }
             try checkAssistance(game.assistance)
@@ -902,5 +910,150 @@ private struct RemoteConsoleSelectionRow: View {
                 }
             }
         }
+    }
+}
+
+
+/// Accessible both from the main settings page and the live PS5 stream.
+/// Uses the exact same versioned validator as the normal Settings importer.
+struct VelmiraSettingsTransferPanel: View {
+    @State private var showImport = false
+    @State private var showPaste = false
+    @State private var showExport = false
+    @State private var pastedJSON = ""
+    @State private var exportDocument: VelmiraSettingsDocument?
+    @State private var resultText = ""
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                VelmiraSection("ملف جميع إعدادات Velmira Play") {
+                    Text("يدعم استيراد وتصدير التحكم، والذكاء الاصطناعي، وأزرار اللمس، والأسلحة، والبث، وملفات الألعاب. لا ينقل بيانات حساب PlayStation أو مفاتيح الاتصال.")
+                        .font(.footnote)
+                    Button {
+                        showImport = true
+                    } label: {
+                        Label("تحميل إعدادات JSON من الآيفون", systemImage: "square.and.arrow.down")
+                            .frame(maxWidth: .infinity, minHeight: 48)
+                    }.buttonStyle(AcidButtonStyle(active: true))
+                    Button {
+                        showPaste = true
+                    } label: {
+                        Label("لصق إعدادات JSON", systemImage: "doc.on.clipboard")
+                            .frame(maxWidth: .infinity, minHeight: 48)
+                    }.buttonStyle(AcidButtonStyle())
+                    Button {
+                        do {
+                            exportDocument = try VelmiraSettingsTransfer.exportCurrent()
+                            showExport = true
+                        } catch {
+                            resultText = error.localizedDescription
+                        }
+                    } label: {
+                        Label("تصدير جميع الإعدادات", systemImage: "square.and.arrow.up")
+                            .frame(maxWidth: .infinity, minHeight: 48)
+                    }.buttonStyle(AcidButtonStyle())
+                    if !resultText.isEmpty {
+                        Text(resultText).font(.footnote).foregroundStyle(.cyan)
+                    }
+                    Text("الاستيراد يوقف المساعدة ويتحقق من الملف قبل تطبيقه. لا تُفعَّل حركة التصويب تلقائياً.")
+                        .font(.caption).foregroundStyle(.orange)
+                }
+            }
+            .padding(20)
+            .frame(maxWidth: 660)
+            .frame(maxWidth: .infinity)
+        }
+        .background(TPPlayTheme.canvas)
+        .navigationTitle("استيراد وتصدير الإعدادات")
+        .sheet(isPresented: $showImport) {
+            VelmiraJSONPicker(onPicked: { url in
+                do {
+                    try VelmiraSettingsTransfer.importFile(at: url)
+                    resultText = "تم استيراد الإعدادات وحفظها؛ التأثيرات الآنية لا تحتاج إنهاء بث PS5."
+                } catch {
+                    resultText = error.localizedDescription
+                }
+                showImport = false
+            }, onCancel: { showImport = false })
+            .ignoresSafeArea()
+        }
+        .sheet(isPresented: $showPaste) {
+            NavigationStack {
+                VStack(alignment: .leading, spacing: 14) {
+                    Button {
+                        pastedJSON = UIPasteboard.general.string ?? ""
+                    } label: {
+                        Label("لصق من الحافظة", systemImage: "doc.on.clipboard")
+                    }
+                    TextEditor(text: $pastedJSON)
+                        .font(.system(.caption, design: .monospaced))
+                        .environment(\.layoutDirection, .leftToRight)
+                        .frame(minHeight: 180)
+                    Button("تطبيق وحفظ JSON") {
+                        do {
+                            try VelmiraSettingsTransfer.importData(Data(pastedJSON.utf8))
+                            resultText = "تم استيراد جميع الإعدادات بنجاح."
+                        } catch {
+                            resultText = error.localizedDescription
+                        }
+                        showPaste = false
+                    }
+                    .buttonStyle(AcidButtonStyle(active: true))
+                    .disabled(pastedJSON.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+                .padding()
+                .navigationTitle("استيراد من النص")
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button("إلغاء") { showPaste = false }
+                    }
+                }
+            }
+        }
+        .fileExporter(isPresented: $showExport,
+                      document: exportDocument, contentType: .json,
+                      defaultFilename: "Velmira-Settings") { result in
+            switch result {
+            case .success:
+                resultText = "تم تصدير إعدادات Velmira Play بنجاح."
+            case .failure(let error):
+                resultText = error.localizedDescription
+            }
+        }
+        .environment(\.layoutDirection, .rightToLeft)
+    }
+}
+
+
+/// User-controlled snapshot of all shareable settings (never PSN credentials).
+@MainActor
+enum VelmiraSettingsCheckpoint {
+    private static let key = "velmira.settings.checkpoint.v1"
+    static var exists: Bool { UserDefaults.standard.data(forKey: key) != nil }
+    static func save() throws {
+        UserDefaults.standard.set(try VelmiraSettingsTransfer.exportCurrent().data, forKey: key)
+    }
+    static func restore() throws {
+        guard let data = UserDefaults.standard.data(forKey: key) else {
+            throw VelmiraImportError.cannotRead
+        }
+        try VelmiraSettingsTransfer.importData(data)
+    }
+}
+
+struct VelmiraDiagnosticLogDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.plainText] }
+    var text: String
+    init(text: String) { self.text = text }
+    init(configuration: ReadConfiguration) throws {
+        guard let data = configuration.file.regularFileContents,
+              let value = String(data: data, encoding: .utf8) else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        text = value
+    }
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: Data(text.utf8))
     }
 }

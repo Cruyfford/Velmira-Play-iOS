@@ -3,7 +3,6 @@ import GameController
 import CoreVideo
 import CoreImage
 import UIKit
-import Vision
 
 @MainActor
 final class AssistanceState: ObservableObject {
@@ -58,25 +57,69 @@ struct AssistanceSettings: View {
             ScrollView {
                 VStack(spacing: 16) {
                 VelmiraSection("التحكم الفعلي — تجريبي") {
-                    Toggle("تفعيل المساعدة عند L2", isOn: $model.armed)
-                    Text("بعد التفعيل اترك L2 وR2 أولًا، ثم اضغط L2. حرّك العصا بقوة لاستعادة أولوية التحكم اليدوي.")
+                    Toggle("تفعيل مساعدة التصويب", isOn: $model.armed)
+                    Text("بعد التفعيل اترك L2 وR2 أولًا. في وضع القفل المستمر يعمل الكشف مع L2 وبدونه. حرّك العصا بقوة لاستعادة أولوية التحكم اليدوي.")
                     Button("إيقاف جميع المساعدات", role: .destructive) { model.emergencyStop() }
                     Text(model.status)
                     if !model.armed, let reason = model.lastStopReason {
                         Text("سبب الإيقاف: \(reason)")
                             .font(.footnote).foregroundStyle(.orange)
                     }
-                    Text("تعديلات مصدر لم تُختبر على PS5 بعد. كشف الأشخاص لا يميز العدو من الصديق. وضع اللون يعتمد على لون علامة الخصم الذي تختاره.").font(.footnote)
+                    Text("YOLOv8n الجديد بدقة 640 يعمل محلياً دون اختيار الأسماء أو الألوان. وقد يخطئ في تصنيف اللاعبين، ولم يُختبر على PS5 بعد.").font(.footnote)
                 }
                 VelmiraSection("التتبّع") {
-                    Button("إعداد التتبّع المدمج: لون + جسم") {
-                        model.emergencyStop(reason: "اختر لون الخصم ثم فعّل المساعدة")
+                    Toggle("حماية فريقي — التتبع على خصم مؤكّد فقط", isOn: $vision.protectTeammates)
+                    Text("تفعيل الحماية يمنع أي تحريك نحو الحلفاء أو اللاعبين المجهولين. لا يحدث قفل تلقائي دون تطابق اسم الخصم فوق رأسه مع قائمة الخصوم الحالية؛ القراءة غير المؤكدة تعني عدم التتبع.")
+                        .font(.footnote).foregroundStyle(.orange)
+                    Button("تشغيل نموذج MW3 YOLOv8n المدرّب") {
+                        model.emergencyStop(reason: "فعّل المساعدة بعد ضبط نموذج YOLOv8n")
                         vision.prepareHybridTracking()
                         model.configuration.tracking = true
                         model.configuration.pointX = 0.5
                         model.configuration.pointY = 0.5
-                        savedNotice = "اختر لون علامة الخصم بالمعايرة، ثم احفظ الإعدادات وفعّل المساعدة عند L2."
+                        savedNotice = "YOLOv8n يكتشف فئة Enemy تلقائياً. احفظ الإعدادات وفعّل المساعدة."
                     }
+                    Button("قفل قوي وسريع — YOLOv8n") {
+                        model.emergencyStop(reason: "أعد تفعيل المساعدة بعد تطبيق القفل القوي")
+                        vision.prepareHybridTracking()
+                        vision.threshold = 0.30
+                        vision.rate = 20 // Target rate, not a guaranteed measured FPS.
+                        model.configuration.tracking = true
+                        model.configuration.strongLock = true
+                        model.configuration.trackingWithoutL2 = true
+                        model.configuration.fullScreenAcquisition = true
+                        model.configuration.switchOnLoss = true
+                        model.configuration.strength = 3.2
+                        model.configuration.maxStick = 0.72
+                        model.configuration.response = 0.025
+                        model.configuration.staleAfter = 0.28
+                        model.configuration.lossDelay = 0.35
+                        model.configuration.manualOverride = 0.55
+                        model.configuration.radius = 0.42
+                        model.configuration.pointX = 0.5
+                        model.configuration.pointY = 0.22
+                        model.configuration.quickScope = false
+                        model.configuration.silentShot = false
+                        savedNotice = "تم تفعيل إعداد القفل القوي. احفظ الإعدادات وفعّل المساعدة يدوياً. الأداء يتوقف على كشف YOLO وتأخير الاتصال."
+                    }
+                    .buttonStyle(.borderedProminent)
+                    Button("قفل مستمر على الهدف — مع L2 وبدونه") {
+                        model.emergencyStop(reason: "فعّل المساعدة يدوياً بعد ضبط القفل المستمر")
+                        vision.prepareHybridTracking()
+                        vision.rate = 12
+                        model.configuration.tracking = true
+                        model.configuration.strength = 2.4
+                        model.configuration.maxStick = 0.60
+                        model.configuration.trackingWithoutL2 = true
+                        model.configuration.fullScreenAcquisition = true
+                        model.configuration.switchOnLoss = true
+                        model.configuration.lossDelay = 0.5
+                        model.configuration.staleAfter = 0.35
+                        model.configuration.response = 0.04
+                        model.configuration.radius = 0.35
+                        savedNotice = "تم ضبط القفل المستمر. احفظ الإعدادات، ثم فعّل المساعدة. الكشف لا يضمن تتبع لاعب خارج الشاشة."
+                    }
+                    .buttonStyle(.borderedProminent)
                     Button("وضع التتبّع السريع والانتقال للهدف القريب") {
                         model.emergencyStop(reason: "أعد تفعيل المساعدة يدويًا بعد تغيير إعدادات التتبّع")
                         vision.prepareHybridTracking()
@@ -90,13 +133,28 @@ struct AssistanceSettings: View {
                         savedNotice = "تم ضبط الاستجابة السريعة مؤقتًا. اضغط حفظ الإعدادات وفعّل المساعدة يدويًا."
                     }
                     .buttonStyle(.borderedProminent)
-                    Text("يحافظ على هوية الهدف المؤكد حتى لو تحرك خارج نطاق الالتقاط الأولي، ويتحول إلى أقرب هدف مؤكّد من موقعه السابق عند فقده. اختفاء الهدف لا يثبت موته؛ لا يتحرك التصويب إلى هدف غير مرئي. تحليل 12 مرة/ثانية حد أقصى مطلوب وليس أداءً مضمونًا.")
+                    Text("يحافظ على هوية الهدف المؤكد حتى لو تحرك خارج نطاق الالتقاط الأولي، ويتحول إلى أقرب هدف مؤكّد من موقعه السابق عند فقده. اختفاء الهدف لا يثبت موته؛ لا يتحرك التصويب إلى هدف غير مرئي. تحليل 12 مرة/ثانية معدل مطلوب وليس أداءً مضمونًا.")
                         .font(.footnote)
-                    if vision.colorMode {
-                        Toggle("اشتراط جسم مكتشف مع لون الخصم", isOn: $vision.hybridMode)
-                        Text("في الوضع المدمج يتبع التصويب موضع الجسم المختار؛ الإزاحة من الاسم تخص وضع اللون وحده.").font(.footnote)
-                    }
+                    Text("مع حماية الفريق المفعّلة، فئة Enemy وحدها لا تكفي؛ يلزم تطابق اسم الخصم المقروء فوق رأسه.")
+                        .font(.footnote)
                     Toggle("تحريك التصويب نحو الهدف", isOn: $model.configuration.tracking)
+                    Toggle("الاستمرار في قفل الهدف بدون L2",
+                           isOn: Binding(
+                               get: { model.configuration.trackingWithoutL2 ?? false },
+                               set: { model.configuration.trackingWithoutL2 = $0 }
+                           ))
+                    Toggle("قفل قوي: استجابة أسرع وتقدّم محدود لحركة الهدف",
+                           isOn: Binding(
+                               get: { model.configuration.strongLock ?? false },
+                               set: { model.configuration.strongLock = $0 }
+                           ))
+                    Toggle("البحث عن الأهداف في كامل الشاشة",
+                           isOn: Binding(
+                               get: { model.configuration.fullScreenAcquisition ?? false },
+                               set: { model.configuration.fullScreenAcquisition = $0 }
+                           ))
+                    Text("الاستمرار دون L2 لا يُفعَّل إلا باختيارك. لا يتحرك التصويب على بيانات قديمة، ولا يمكن الاحتفاظ بهدف غير مرئي.")
+                        .font(.footnote)
                     if !vision.enabled {
                         Button("تشغيل تحليل الصورة") { vision.enabled = true }
                     }
@@ -107,29 +165,13 @@ struct AssistanceSettings: View {
                     Toggle("عكس المحور الرأسي", isOn: $model.configuration.invertY)
                     Toggle("الانتقال لهدف آخر عند اختفاء الحالي", isOn: $model.configuration.switchOnLoss)
                     valueSlider("مهلة فقد الهدف بالثواني", value: $model.configuration.lossDelay, range: 0.15...2)
-                    Text("بدون الانتقال التلقائي: اترك L2 واضغطه مجددًا لاختيار هدف جديد. تُوقف الحركة عند تقادم الصورة؛ لا يستمر التصويب نحو موقع قديم.").font(.footnote)
+                    Text("في وضع L2 التقليدي، قد يلزم ترك L2 عند فقدان الهدف. أما القفل المستمر فيسمح باكتساب هدف مؤكد جديد بعد مهلة الفقد، دون تحريك التصويب على صورة قديمة.").font(.footnote)
                 }
-                VelmiraSection("لون العلامة فوق الرأس") {
-                    Toggle("استخدام تتبّع اللون", isOn: $vision.colorMode)
-                    HStack(spacing: 12) {
-                        Button("أحمر") { vision.colorHue = 0 }
-                        Button("أرجواني") { vision.colorHue = 0.88 }
-                        Button("أصفر") { vision.colorHue = 0.16 }
-                    }.buttonStyle(.bordered)
-                    Text("درجة اللون")
-                    LinearGradient(colors: [.red, .yellow, .green, .cyan, .blue, .purple, .red],
-                                   startPoint: .leading, endPoint: .trailing)
-                        .frame(height: 12).clipShape(Capsule())
-                        .environment(\.layoutDirection, .leftToRight)
-                    Slider(value: $vision.colorHue, in: 0...1)
-                        .tint(Color(hue: vision.colorHue, saturation: 1, brightness: 1))
-                        .environment(\.layoutDirection, .leftToRight)
-                        .accessibilityLabel("درجة لون العلامة")
-                    Text("سماحية اختلاف اللون")
-                    Slider(value: $vision.colorTolerance, in: 0.01...0.15)
-                        .accessibilityLabel("سماحية اختلاف اللون")
-                    Text("هذا نفس اختيار اللون في قسم الذكاء الاصطناعي. يتغير لون الاسم التوضيحي معه. يعتمد الكشف على درجة اللون وليس مطابقة درجة السطوع حرفياً.")
+                VelmiraSection("نموذج كشف MW3") {
+                    Text("تستخدم النسخة المدرّبة YOLOv8n (فئة Enemy واحدة) من دون إدخال أسماء اللاعبين أو ألوانهم.")
                         .font(.footnote)
+                    Text("تقييم الاختبار الجديد بدقة 640: mAP@50 نحو 79.5٪ على 21 صورة فقط. قد يفقد اللاعب البعيد أو يخلط الحلفاء بالأعداء؛ هذه ليست دقة مضمونة داخل اللعبة.")
+                        .font(.footnote).foregroundStyle(.orange)
                 }
                 VelmiraSection("موضع التصويب داخل الجسم") {
                     HStack {
@@ -355,9 +397,15 @@ final class GameProfiles: ObservableObject {
     }
     func save(_ name: String) {
         let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !clean.isEmpty else { return }
+        guard !clean.isEmpty, clean.count <= 80 else { message = "اسم الملف يجب أن يكون بين 1 و80 حرفاً"; return }
         let ai = AIAnalysisState.shared
         let defaults = UserDefaults.standard
+        if let index = profiles.firstIndex(where: { $0.name.localizedCaseInsensitiveCompare(clean) == .orderedSame }) {
+            profiles.remove(at: index)
+        } else if profiles.count >= 40 {
+            message = "بلغت الحد الأقصى (40 ملفاً). احذف ملفاً قديماً أولاً."
+            return
+        }
         profiles.append(GameProfile(name: clean, assistance: AssistanceState.shared.configuration,
             hue: ai.colorHue, tolerance: ai.colorTolerance, colorMode: ai.colorMode,
             threshold: ai.threshold, rate: ai.rate,
@@ -687,9 +735,7 @@ struct StreamCalibrationView: View {
 }
 
 
-// MARK: - Select an on-screen player name from a frozen PS5 video frame.
-// The capture remains on-device. OCR and color are visual suggestions;
-// the user explicitly confirms the player's team before saving.
+// MARK: - Shared color helpers
 
 extension UIColor {
     convenience init?(hexRGB text: String) {
@@ -714,263 +760,22 @@ extension UIColor {
     }
 }
 
-private final class OnDeviceNameFrame: @unchecked Sendable {
-    let image: CGImage
-    init(image: CGImage) { self.image = image }
-}
-
-private struct NameOnScreen: Identifiable, Sendable {
-    let id: UUID
-    let name: String
-    /// Vision coordinates, with origin at lower left.
-    let rectangle: CGRect
-
-    init(name: String, rectangle: CGRect) {
-        self.id = UUID()
-        self.name = name
-        self.rectangle = rectangle
-    }
-
-    var topLeftRectangle: CGRect {
-        CGRect(x: rectangle.minX, y: 1 - rectangle.maxY,
-               width: rectangle.width, height: rectangle.height)
-    }
-}
-
-private enum NameColorSampler {
-    /// Pick a frequent bright/saturated foreground color inside the OCR text box.
-    /// If the name is white/grey, return nil rather than falsely selecting a hue.
-    static func suggestedHEX(in image: CGImage, region: CGRect) -> String? {
-        let size = CGSize(width: CGFloat(image.width), height: CGFloat(image.height))
-        let box = CGRect(x: region.minX * size.width,
-                         y: (1 - region.maxY) * size.height,
-                         width: region.width * size.width,
-                         height: region.height * size.height).integral
-        let frameBounds = CGRect(origin: .zero, size: size)
-        let clipped = box.intersection(frameBounds)
-        guard !clipped.isNull, clipped.width >= 2, clipped.height >= 2,
-              let cropped = image.cropping(to: clipped) else { return nil }
-
-        let columns = max(1, min(96, cropped.width))
-        let rows = max(1, min(32, cropped.height))
-        var pixels = [UInt8](repeating: 0, count: columns * rows * 4)
-        let rendered = pixels.withUnsafeMutableBytes { raw -> Bool in
-            guard let ctx = CGContext(data: raw.baseAddress, width: columns, height: rows,
-                                      bitsPerComponent: 8, bytesPerRow: columns * 4,
-                                      space: CGColorSpaceCreateDeviceRGB(),
-                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
-                return false
-            }
-            ctx.interpolationQuality = .medium
-            ctx.draw(cropped, in: CGRect(x: 0, y: 0, width: CGFloat(columns), height: CGFloat(rows)))
-            return true
-        }
-        guard rendered else { return nil }
-
-        var counts = [Int](repeating: 0, count: 24)
-        var reds = [Int](repeating: 0, count: 24)
-        var greens = [Int](repeating: 0, count: 24)
-        var blues = [Int](repeating: 0, count: 24)
-        for offset in stride(from: 0, to: pixels.count, by: 4) {
-            let r = pixels[offset], g = pixels[offset + 1], b = pixels[offset + 2]
-            let color = UIColor(red: CGFloat(r) / 255, green: CGFloat(g) / 255,
-                                blue: CGFloat(b) / 255, alpha: 1)
-            var hue: CGFloat = 0, saturation: CGFloat = 0
-            var brightness: CGFloat = 0, alpha: CGFloat = 0
-            color.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
-            guard saturation >= 0.4, brightness >= 0.45 else { continue }
-            let bin = min(23, Int(hue * 24))
-            counts[bin] += 1
-            reds[bin] += Int(r)
-            greens[bin] += Int(g)
-            blues[bin] += Int(b)
-        }
-
-        guard let preferred = counts.indices.max(by: { counts[$0] < counts[$1] }),
-              counts[preferred] >= 3 else { return nil }
-        let number = counts[preferred]
-        return String(format: "#%02X%02X%02X",
-                      reds[preferred] / number,
-                      greens[preferred] / number,
-                      blues[preferred] / number)
-    }
-}
-
+// Apple Vision OCR and manual name/color capture removed. YOLO detects
+// anonymous person boxes; no textual identity is required for automatic tracking.
 struct PlayerNameCaptureView: View {
     let shot: CalibrationShot
     @Environment(\.dismiss) private var dismiss
-    @ObservedObject private var roster = MatchRoster.shared
-    @ObservedObject private var vision = AIAnalysisState.shared
-
-    @State private var recognized: [NameOnScreen] = []
-    @State private var isReading = true
-    @State private var chosenID: UUID?
-    @State private var chosenName = ""
-    @State private var chosenHEX = ""
-    @State private var message = "المس اسم اللاعب في الصورة لاختيار النص ولونه."
-    @State private var saved = false
-
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: 14) {
-                    Text("لقطة ثابتة من البث. المس اسم اللاعب فوق شخصيته، وراجع الاسم واللون قبل وضعه في فريق الخصم.")
-                        .font(.footnote)
-                    GeometryReader { geometry in
-                        let ratio = CGFloat(shot.image.width) / CGFloat(shot.image.height)
-                        let width = min(geometry.size.width, geometry.size.height * ratio)
-                        let height = width / ratio
-                        let left = (geometry.size.width - width) / 2
-                        let top = (geometry.size.height - height) / 2
-                        ZStack(alignment: .topLeading) {
-                            Color.black
-                            Image(decorative: shot.image, scale: 1)
-                                .resizable()
-                                .frame(width: width, height: height)
-                                .offset(x: left, y: top)
-                            ForEach(recognized) { entry in
-                                let r = entry.topLeftRectangle
-                                RoundedRectangle(cornerRadius: 3)
-                                    .stroke(entry.id == chosenID ? Color.green : Color.yellow.opacity(0.5),
-                                            lineWidth: entry.id == chosenID ? 2 : 1)
-                                    .frame(width: r.width * width, height: r.height * height)
-                                    .position(x: left + r.midX * width, y: top + r.midY * height)
-                            }
-                        }
-                        .contentShape(Rectangle())
-                        .onTapGesture { location in
-                            guard width > 0, height > 0,
-                                  location.x >= left, location.x <= left + width,
-                                  location.y >= top, location.y <= top + height else { return }
-                            let normalized = CGPoint(x: (location.x - left) / width,
-                                                     y: (location.y - top) / height)
-                            selectName(at: normalized)
-                        }
-                    }
-                    .frame(height: 300)
-                    .environment(\.layoutDirection, .leftToRight)
-
-                    if isReading {
-                        HStack { ProgressView(); Text("جارٍ قراءة الأسماء من صورة البث…") }
-                    }
-                    Text(message).font(.footnote).foregroundStyle(.orange)
-
-                    TextField("اسم اللاعب — يمكنك تصحيحه", text: $chosenName)
-                        .textFieldStyle(AcidFieldStyle())
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .environment(\.layoutDirection, .leftToRight)
-                    HStack {
-                        TextField("لون الاسم HEX: #FF0000", text: $chosenHEX)
-                            .textFieldStyle(AcidFieldStyle())
-                            .textInputAutocapitalization(.characters)
-                            .autocorrectionDisabled()
-                            .environment(\.layoutDirection, .leftToRight)
-                        if let color = UIColor(hexRGB: chosenHEX) {
-                            Circle().fill(Color(uiColor: color)).frame(width: 24, height: 24)
-                        }
-                    }
-                    Text("قراءة الاسم واللون تقديرية. اللون الواحد قد يظهر أيضًا فوق حليف أو عنصر آخر؛ تأكد من الفريق قبل الحفظ.")
-                        .font(.footnote).foregroundStyle(.orange)
-                    Button("حفظ الاسم في الخصوم واستخدام لون التتبّع") {
-                        guard !chosenName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                              let color = UIColor(hexRGB: chosenHEX) else { return }
-                        let normalizedHEX = chosenHEX.trimmingCharacters(in: .whitespacesAndNewlines)
-                        let hex = normalizedHEX.hasPrefix("#") ? normalizedHEX : "#" + normalizedHEX
-                        roster.saveSelectedOpponent(name: chosenName, colorHEX: hex)
-                        if !roster.names.contains(where: {
-                            $0.side == .opponent &&
-                            $0.name.localizedCaseInsensitiveCompare(chosenName.trimmingCharacters(in: .whitespacesAndNewlines)) == .orderedSame
-                        }) {
-                            message = roster.message
-                            return
-                        }
-                        vision.colorHue = color.hueValue
-                        vision.colorMode = true
-                        vision.enabled = true
-                        guard vision.saveSettings() else {
-                            message = "حُفظ اسم اللاعب، لكن تعذر حفظ إعداد اللون."
-                            return
-                        }
-                        saved = true
-                        dismiss()
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 50)
-                    .buttonStyle(AcidButtonStyle(active: true))
-                    .disabled(chosenName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-                              UIColor(hexRGB: chosenHEX) == nil)
-                    Text("تفعيل لون التتبّع لا يفعّل المساعدة على التحكم تلقائيًا.")
-                        .font(.footnote)
-                }
-                .padding(20)
-            }
-            .background(TPPlayTheme.canvas)
-            .navigationTitle("التقاط اسم الخصم ولونه")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("إغلاق") { dismiss() }
-                }
-            }
+            VStack(spacing: 16) {
+                Text("YOLO — كشف تلقائي").font(.headline)
+                Text("يكتشف البرنامج الأشخاص والعلامات الدافئة فوقهم من بث PS5 دون اختيار الأسماء أو الألوان يدوياً.")
+                Text("YOLO لا يقرأ أسماء اللاعبين، ولا يضمن أن كل علامة دافئة تعني فريق الخصم.")
+                    .font(.footnote).foregroundStyle(.orange)
+                Button("إغلاق") { dismiss() }.buttonStyle(.borderedProminent)
+            }.padding(20)
+                .navigationTitle("الكشف التلقائي")
         }
         .environment(\.layoutDirection, .rightToLeft)
-        .task { await findNames() }
-    }
-
-    @MainActor
-    private func findNames() async {
-        isReading = true
-        let image = OnDeviceNameFrame(image: shot.image)
-        let matches: [NameOnScreen] = await Task.detached(priority: .userInitiated) {
-            let request = VNRecognizeTextRequest()
-            request.recognitionLevel = .accurate
-            request.usesLanguageCorrection = false
-            do {
-                try VNImageRequestHandler(cgImage: image.image, orientation: .up, options: [:])
-                    .perform([request])
-                return (request.results ?? []).compactMap { observation -> NameOnScreen? in
-                    guard let top = observation.topCandidates(1).first,
-                          top.confidence >= 0.3 else { return nil }
-                    let name = top.string.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard name.count >= 2 && name.count <= 64,
-                          name.rangeOfCharacter(from: .letters) != nil else { return nil }
-                    return NameOnScreen(name: name, rectangle: observation.boundingBox)
-                }
-            } catch { return [] }
-        }.value
-        guard !Task.isCancelled else { return }
-        recognized = matches
-        isReading = false
-        if matches.isEmpty {
-            message = "لم تُقرأ أسماء واضحة. يمكنك إدخال الاسم واللون يدويًا، أو إعادة الالتقاط حين يظهر الاسم بوضوح."
-        } else {
-            message = "المس اسم اللاعب داخل الإطار الأصفر، ثم تأكد من البيانات قبل الحفظ."
-        }
-    }
-
-    private func selectName(at point: CGPoint) {
-        guard !recognized.isEmpty else {
-            message = "لا توجد أسماء مكتشفة في هذه النقطة. اكتب الاسم ولونه يدويًا."
-            return
-        }
-        let candidates = recognized.compactMap { item -> (NameOnScreen, CGFloat)? in
-            let rect = item.topLeftRectangle.insetBy(dx: -0.015, dy: -0.018)
-            guard rect.contains(point) else { return nil }
-            return (item, hypot(item.topLeftRectangle.midX - point.x,
-                                item.topLeftRectangle.midY - point.y))
-        }
-        guard let nearest = candidates.min(by: { $0.1 < $1.1 })?.0 else {
-            message = "المس الحروف داخل الإطار الأصفر، أو اكتب الاسم يدويًا."
-            return
-        }
-        chosenID = nearest.id
-        chosenName = nearest.name
-        if let detectedColor = NameColorSampler.suggestedHEX(in: shot.image, region: nearest.rectangle) {
-            chosenHEX = detectedColor
-            message = "تم التعرف على الاسم واللون المقترح. راجعهما قبل الحفظ."
-        } else {
-            chosenHEX = ""
-            message = "تم التعرف على الاسم، ولكن لونه غير واضح. أدخل رمز اللون HEX يدويًا."
-        }
     }
 }

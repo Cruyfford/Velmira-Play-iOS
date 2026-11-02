@@ -1,0 +1,37 @@
+name: Fetch official YOLOv8n weights for local MW3 fine-tuning
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/mw3-training-assets.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  offline-assets:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Download public pretrained YOLOv8n and Linux Python wheels
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p assets/wheels
+          curl --fail --location --retry 3 --show-error --silent \
+            https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n.pt \
+            --output assets/yolov8n.pt
+          python -m pip download --no-deps --only-binary=:all: --dest assets/wheels \
+            ultralytics ultralytics-thop polars polars-runtime-32
+          test "$(wc -c < assets/yolov8n.pt)" -gt 3000000
+          sha256sum assets/yolov8n.pt
+          ls -lh assets/ assets/wheels/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MW3-YOLOv8n-Pretrained-CPU-Assets
+          path: assets/
+          retention-days: 2
+          if-no-files-found: error

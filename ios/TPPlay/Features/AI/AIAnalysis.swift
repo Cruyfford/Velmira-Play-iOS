@@ -1,9 +1,54 @@
 import SwiftUI
-import Vision
 import CoreVideo
 import ImageIO
 import PhotosUI
 import CoreImage
+import Vision
+import ImageIO
+
+/// Bounded, on-device diagnostics. Never logs gamertags, screenshots or PSN credentials.
+@MainActor
+final class VelmiraLiveDiagnostics: ObservableObject {
+    static let shared = VelmiraLiveDiagnostics()
+    @Published private(set) var lines: [String] = []
+    @Published private(set) var measuredYOLOms = 0.0
+    @Published private(set) var analysisRate = 0.0
+    @Published private(set) var droppedBusy = 0
+    @Published private(set) var thermalDescription = "عادي"
+    @Published private(set) var lastOCRStatus = "بانتظار قراءة الأسماء"
+    private let formatter = ISO8601DateFormatter()
+    private var lastLoggedErrorAt: TimeInterval = 0
+    func record(_ kind: String, _ detail: String) {
+        lines.append("\(formatter.string(from: Date())) | \(kind) | \(String(detail.prefix(160)).replacingOccurrences(of: "\n", with: " "))")
+        if lines.count > 180 { lines.removeFirst(lines.count - 180) }
+    }
+    func updateInference(milliseconds: Double, limit: Double, dropped: Int,
+                         temperature: ProcessInfo.ThermalState, error: String?) {
+        if milliseconds.isFinite && milliseconds > 0 { measuredYOLOms = milliseconds }
+        analysisRate = limit
+        droppedBusy = dropped
+        switch temperature {
+        case .nominal: thermalDescription = "عادي"
+        case .fair: thermalDescription = "دافئ"
+        case .serious: thermalDescription = "مرتفع — خفض الأداء"
+        case .critical: thermalDescription = "حرج — تقليل التحليل"
+        @unknown default: thermalDescription = "غير معروف"
+        }
+        if error != nil, ProcessInfo.processInfo.systemUptime - lastLoggedErrorAt > 3 {
+            record("YOLO", "تعذر تنفيذ التحليل، افحص سجل النظام")
+            lastLoggedErrorAt = ProcessInfo.processInfo.systemUptime
+        }
+    }
+    func updateOCR(_ status: String) { lastOCRStatus = status }
+    func clear() { lines = []; record("LOG", "تم مسح سجل التشخيص") }
+    var exportText: String {
+        (["Velmira Play local diagnostics",
+          "Generated: \(formatter.string(from: Date()))",
+          "No gamer tags, video frames, PSN credentials or connection addresses stored.",
+          "Thermal: \(thermalDescription); inference ms: \(measuredYOLOms); analysis cap: \(analysisRate); dropped busy: \(droppedBusy)",
+          ""] + lines).joined(separator: "\n")
+    }
+}
 
 /// Analysis is independent from controller output; assistance consumes fresh results only.
 @MainActor
@@ -13,18 +58,29 @@ final class AIAnalysisState: ObservableObject {
     @Published var hybridMode = true { didSet { configure() } }
     @Published var adaptiveBodyMarker = true { didSet { configure() } }
     @Published var showPlayerBoxes = true
+    /// Defaults ON: only a confirmed opposing name above a YOLO body can authorize tracking.
+    @Published var protectTeammates = true
+    /// Explicit opt-in: colored moving nameplates must belong to a YOLO body.
+    /// Not a replacement for confirmed-opponent OCR when team protection is on.
+    @Published var smartColorTracking = false { didSet { configure() } }
     @Published var precisionMode = true { didSet { configure() } }
     private var persistence = StableDetectionFilter()
+    // Visual-only hysteresis: missing one inference frame must not blink the
+    // on-screen rectangle. This cache is NEVER consumed by controller tracking.
+    private var overlayBoxHold = PlayerOverlayBoxHold()
     @Published var colorHue = 0.0 { didSet { configure() } }
     @Published var colorTolerance = 0.045 { didSet { configure() } }
     @Published var enabled = false { didSet { configure() } }
-    @Published var threshold = 0.6 { didSet { configure() } }
-    @Published var rate = 8.0 { didSet { configure() } }
+    @Published var threshold = 0.30 { didSet { configure() } }
+    @Published var rate = 12.0 { didSet { configure() } }
     @Published private(set) var result: HumanAnalysis?
+    @Published private(set) var liveNameMatches: [LiveNameMatch] = []
+    private var pendingNameMatches: [String: (sample: LiveNameMatch, hits: Int)] = [:]
     private struct SavedAISettings: Codable {
         var colorMode: Bool
         var hybridMode: Bool
         var precisionMode: Bool
+        var smartColorTracking: Bool? // optional to decode older saved profiles
         var colorHue: Double
         var colorTolerance: Double
         var enabled: Bool
@@ -34,6 +90,7 @@ final class AIAnalysisState: ObservableObject {
     private let settingsKey = "velmira.ai.explicitSave.v1"
     private let adaptiveMarkerKey = "velmira.ai.bodyMarker.v1"
     private let playerBoxesKey = "velmira.ai.greenPlayerBoxes.v1"
+    private let teammateProtectionKey = "velmira.ai.requireConfirmedOpponent.v1"
 
     private init() {
         restoreSavedSettings()
@@ -42,19 +99,22 @@ final class AIAnalysisState: ObservableObject {
     @discardableResult
     func saveSettings() -> Bool {
         let value = SavedAISettings(colorMode: colorMode, hybridMode: hybridMode,
-                                    precisionMode: precisionMode, colorHue: colorHue,
+                                    precisionMode: precisionMode,
+                                    smartColorTracking: smartColorTracking, colorHue: colorHue,
                                     colorTolerance: colorTolerance, enabled: enabled,
                                     threshold: threshold, rate: rate)
         guard let data = try? JSONEncoder().encode(value) else { return false }
         UserDefaults.standard.set(data, forKey: settingsKey)
         UserDefaults.standard.set(adaptiveBodyMarker, forKey: adaptiveMarkerKey)
         UserDefaults.standard.set(showPlayerBoxes, forKey: playerBoxesKey)
+        UserDefaults.standard.set(protectTeammates, forKey: teammateProtectionKey)
         return true
     }
 
     func restoreSavedSettings() {
         adaptiveBodyMarker = UserDefaults.standard.object(forKey: adaptiveMarkerKey) as? Bool ?? true
         showPlayerBoxes = UserDefaults.standard.object(forKey: playerBoxesKey) as? Bool ?? true
+        protectTeammates = UserDefaults.standard.object(forKey: teammateProtectionKey) as? Bool ?? true
         guard let data = UserDefaults.standard.data(forKey: settingsKey),
               let value = try? JSONDecoder().decode(SavedAISettings.self, from: data) else {
             return
@@ -62,6 +122,7 @@ final class AIAnalysisState: ObservableObject {
         colorMode = value.colorMode
         hybridMode = value.hybridMode
         precisionMode = value.precisionMode
+        smartColorTracking = value.smartColorTracking ?? false
         colorHue = value.colorHue
         colorTolerance = value.colorTolerance
         enabled = value.enabled
@@ -73,9 +134,13 @@ final class AIAnalysisState: ObservableObject {
         AIFrameAnalyzer.shared.configure(enabled: enabled, threshold: Float(threshold), rate: rate,
             colorMode: colorMode, hybridMode: hybridMode,
             adaptiveBodyMarker: adaptiveBodyMarker,
+            smartColorTracking: smartColorTracking,
             color: ColorTrackingConfiguration(hue: colorHue, tolerance: colorTolerance))
         result = nil
+        liveNameMatches = []
+        pendingNameMatches.removeAll()
         persistence.reset()
+        overlayBoxHold.reset()
     }
     /// Configure image analysis only; activation of controller assistance stays manual.
     func prepareHybridTracking() {
@@ -83,15 +148,28 @@ final class AIAnalysisState: ObservableObject {
         hybridMode = true
         precisionMode = true
         adaptiveBodyMarker = true
-        rate = 8
+        threshold = 0.30
+        rate = 12
         enabled = true
     }
 
     func accept(_ value: HumanAnalysis) {
-        let hybrid = colorMode && hybridMode
-        guard precisionMode || hybrid else { result = value; return }
+        // Drawing candidate boxes and authorizing controller targets are separate.
+        // Unknown YOLO detections remain visible (green) even in team-safe mode.
+        let displayBoxes = overlayBoxHold.accept(
+            value.visiblePlayerBoxes, capturedAt: value.capturedAt,
+            hasError: value.error != nil)
+        let hybrid = true
+        guard precisionMode || hybrid else {
+            var display = value
+            display.visiblePlayerBoxes = displayBoxes
+            result = display
+            return
+        }
         if value.error != nil {
             persistence.reset()
+            liveNameMatches = []
+            pendingNameMatches.removeAll()
             result = value
             return
         }
@@ -110,11 +188,44 @@ final class AIAnalysisState: ObservableObject {
         result = HumanAnalysis(detections: confirmed, imageSize: value.imageSize,
                                capturedAt: value.capturedAt,
                                milliseconds: value.milliseconds, error: value.error,
-                               visiblePlayerBoxes: value.visiblePlayerBoxes)
+                               visiblePlayerBoxes: displayBoxes)
+    }
+    func acceptNameMatches(_ names: [LiveNameMatch], sampledAt: TimeInterval) {
+        guard enabled, let result, result.error == nil,
+              result.capturedAt >= sampledAt - 0.10,
+              result.capturedAt - sampledAt <= 0.90 else { return }
+        // Only show names after two consistent scans of the same player body.
+        pendingNameMatches = pendingNameMatches.filter {
+            sampledAt - $0.value.sample.capturedAt <= 2.2
+        }
+        var verified: [LiveNameMatch] = []
+        for candidate in names {
+            let key = candidate.name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            if let prior = pendingNameMatches[key],
+               prior.sample.side == candidate.side,
+               sampledAt > prior.sample.capturedAt,
+               sampledAt - prior.sample.capturedAt <= 2.2,
+               NameplateRosterAssociation.matchingBox(prior.sample.body, candidate.body) {
+                let hits = min(5, prior.hits + 1)
+                pendingNameMatches[key] = (sample: candidate, hits: hits)
+                if hits >= 2 { verified.append(candidate) }
+            } else {
+                pendingNameMatches[key] = (sample: candidate, hits: 1)
+            }
+        }
+        liveNameMatches = verified
+        VelmiraLiveDiagnostics.shared.updateOCR("تم تأكيد \(verified.count) من تسميات اللاعبين")
+    }
+    func invalidateRosterMatches() {
+        liveNameMatches = []
+        pendingNameMatches.removeAll()
     }
     func clear() {
         result = nil
+        liveNameMatches = []
+        pendingNameMatches.removeAll()
         persistence.reset()
+        overlayBoxHold.reset()
         AIFrameAnalyzer.shared.invalidate()
     }
 }
@@ -123,57 +234,125 @@ private final class RetainedVideoFrame: @unchecked Sendable {
     init(_ buffer: CVPixelBuffer) { self.buffer = buffer }
 }
 
+/// Separate, throttled text recognition for *floating gamer tags*. Never
+/// alters controller input. YOLO remains the sole body detection system.
+private final class OnScreenNameplateOCR: @unchecked Sendable {
+    static let shared = OnScreenNameplateOCR()
+    private let queue = DispatchQueue(label: "app.velmira.nameplate.ocr", qos: .utility)
+    private let lock = NSLock()
+    private var busy = false
+    private var lastScan: TimeInterval = 0
+
+    func submit(_ source: CVPixelBuffer,
+                bodies: [CGRect], roster: [KnownRosterPlayer],
+                capturedAt: TimeInterval) {
+        guard !bodies.isEmpty, !roster.isEmpty else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        lock.lock()
+        let heat = ProcessInfo.processInfo.thermalState
+        let spacing = heat == .serious ? 2.0 : (heat == .fair ? 1.15 : 0.85)
+        guard !busy, now - lastScan >= spacing, heat != .critical else {
+            lock.unlock()
+            return
+        }
+        busy = true
+        lastScan = now
+        lock.unlock()
+        let frame = RetainedVideoFrame(source)
+        queue.async { [self, frame, bodies, roster] in
+            defer { lock.lock(); busy = false; lock.unlock() }
+            let request = VNRecognizeTextRequest()
+            request.recognitionLevel = .accurate
+            request.usesLanguageCorrection = false
+            request.recognitionLanguages = ["en-US"]
+            request.minimumTextHeight = 0.004
+            do {
+                try VNImageRequestHandler(cvPixelBuffer: frame.buffer, options: [:]).perform([request])
+                let items: [NameplateTextObservation] = (request.results ?? []).compactMap {
+                    observation in
+                    guard let text = observation.topCandidates(1).first,
+                          text.confidence >= 0.56 else { return nil }
+                    return NameplateTextObservation(text: text.string,
+                                                    box: observation.boundingBox,
+                                                    confidence: text.confidence)
+                }
+                // Never attach a scoreboard row to a body visible through the
+                // transparent leaderboard panel.
+                let hasScoreboard = items.contains {
+                    let label = $0.text.uppercased()
+                    return label.contains("SCOREBOARD")
+                }
+                let matches = hasScoreboard ? [] :
+                    NameplateRosterAssociation.match(
+                        texts: items, bodies: bodies,
+                        players: roster, capturedAt: capturedAt)
+                Task { @MainActor in
+                    AIAnalysisState.shared.acceptNameMatches(matches, sampledAt: capturedAt)
+                }
+            } catch {
+                Task { @MainActor in
+                    AIAnalysisState.shared.acceptNameMatches([], sampledAt: capturedAt)
+                }
+            }
+        }
+    }
+}
+
 final class AIFrameAnalyzer: @unchecked Sendable {
     static let shared = AIFrameAnalyzer()
-    private let queue = DispatchQueue(label: "app.velmira.vision", qos: .userInitiated)
+    private let queue = DispatchQueue(label: "app.velmira.yolov8", qos: .userInitiated)
     private let lock = NSLock()
     private var enabled = false
     private var paused = false
     private var busy = false
     private var generation: UInt64 = 0
-    private var threshold: Float = 0.6
+    private var threshold: Float = 0.30
     private var rate = 3.0
     private var colorMode = false
+    private var smartColorTracking = false
     private var hybridMode = true
     private var adaptiveBodyMarker = true
     private var color = ColorTrackingConfiguration()
     private var previousTime: TimeInterval = 0
+    private var averagedMS = 0.0
+    private var droppedBusyCount = 0
+    private var lastTelemetryTime: TimeInterval = 0
+    private var lastThermal: ProcessInfo.ThermalState = .nominal
     func configure(enabled: Bool, threshold: Float, rate: Double, colorMode: Bool,
                    hybridMode: Bool, adaptiveBodyMarker: Bool,
+                   smartColorTracking: Bool,
                    color: ColorTrackingConfiguration) {
         lock.lock(); defer { lock.unlock() }
         self.colorMode = colorMode
+        self.smartColorTracking = smartColorTracking
         self.hybridMode = hybridMode
         self.adaptiveBodyMarker = adaptiveBodyMarker
         self.color = color
-        self.enabled = enabled; self.threshold = min(0.95, max(0.2, threshold))
-        self.rate = min(12, max(1, rate)); generation &+= 1
+        self.enabled = enabled; self.threshold = min(0.95, max(0.15, threshold))
+        self.rate = min(24, max(1, rate)); generation &+= 1
     }
     func invalidate() { lock.lock(); generation &+= 1; lock.unlock() }
     func setPaused(_ value: Bool) {
         lock.lock(); paused = value; generation &+= 1; lock.unlock()
-        // Keep the independent roster OCR aligned with video foreground state.
-        AutoRosterScanner.shared.setPaused(value)
     }
     private func current(_ token: UInt64) -> Bool {
         lock.lock(); defer { lock.unlock() }
         return enabled && !paused && generation == token
     }
     func submit(_ pixelBuffer: CVPixelBuffer) {
-        // Read names without requiring the person/color overlay to be enabled.
-        // The roster reader has its own capped rate and pause policy.
-        AutoRosterScanner.shared.submit(pixelBuffer)
         let now = ProcessInfo.processInfo.systemUptime
         let thermal = ProcessInfo.processInfo.thermalState
         lock.lock()
-        let effectiveRate = (thermal == .serious || thermal == .critical) ? min(rate, 2) : rate
-        guard enabled && !paused && !busy && now - previousTime >= 1 / effectiveRate else { lock.unlock(); return }
+        let effectiveRate = AdaptiveAnalysisBudget.limit(
+            requested: rate, averageInferenceMS: averagedMS,
+            thermalLevel: AdaptiveAnalysisBudget.level(thermal))
+        guard enabled && !paused else { lock.unlock(); return }
+        if busy { droppedBusyCount += 1; lock.unlock(); return }
+        guard now - previousTime >= 1 / effectiveRate else { lock.unlock(); return }
         busy = true; previousTime = now
         let token = generation; let minimum = threshold
-        let useColor = colorMode
-        let useHybrid = hybridMode
-        let showAdaptiveMarker = adaptiveBodyMarker
-        let colorConfiguration = color
+        let useSmartColor = smartColorTracking
+        let selectedColor = color
         lock.unlock()
         let frame = RetainedVideoFrame(pixelBuffer)
         queue.async { [self, frame] in
@@ -183,37 +362,34 @@ final class AIFrameAnalyzer: @unchecked Sendable {
             let size = CGSize(width: CVPixelBufferGetWidth(frame.buffer), height: CVPixelBufferGetHeight(frame.buffer))
             let report: HumanAnalysis
             do {
-                // Analyze visible people independently of colored names or UI text.
-                let personRequest = VNDetectHumanRectanglesRequest()
-                personRequest.upperBodyOnly = false
-                try VNImageRequestHandler(cvPixelBuffer: frame.buffer, orientation: .up, options: [:])
-                    .perform([personRequest])
-                let peopleResults = (personRequest.results ?? []).filter {
-                    $0.confidence >= minimum &&
-                    $0.boundingBox.width >= 0.015 && $0.boundingBox.height >= 0.055 &&
-                    $0.boundingBox.minX >= 0 && $0.boundingBox.minY >= 0 &&
-                    $0.boundingBox.maxX <= 1 && $0.boundingBox.maxY <= 1
-                }
-                let people = Array(peopleResults.prefix(24)).map(\.boundingBox)
-                let detections: [HumanDetection]
-                if useColor {
-                    let colorBoxes = try ColorTargetDetector.detect(frame.buffer, configuration: colorConfiguration)
-                    if useHybrid {
-                        detections = HybridTargetFusion.associate(markers: colorBoxes, people: people)
-                    } else {
-                        detections = colorBoxes.map { marker in
-                            let match = showAdaptiveMarker
-                                ? VisualBodyAssociation.bestPerson(for: marker, among: people) : nil
-                            return HumanDetection(id: UUID(), box: marker, confidence: 0,
-                                                  humanSupported: match != nil,
-                                                  matchedPersonBox: match)
-                        }
-                    }
+                // This fine-tuned YOLOv8n predicts the one labeled Enemy
+                // class directly; it no longer requires a colored nameplate,
+                // OCR, manual names, or Apple Vision to permit detection.
+                // Enemy labels are probabilistic and may be wrong in MWIII.
+                let found = try CoreMLYOLODetector.shared.detect(frame.buffer, threshold: minimum)
+                let people = found.map(\.box)
+                // In smart-color mode a detected colored region is eligible
+                // ONLY when spatially attached to one unambiguous YOLO body.
+                // Standalone Point/Mark/A/B HUD glyphs cannot create targets.
+                // The normal YOLO overlays remain visible even without a hue hit.
+                let associated: [CGRect]
+                if useSmartColor {
+                    let markers = (try? ColorTargetDetector.detect(
+                        frame.buffer, configuration: selectedColor)) ?? []
+                    associated = SmartColorBodyGate.associatedBodies(
+                        markers: markers, people: people)
                 } else {
-                    detections = peopleResults.prefix(24).map {
-                        HumanDetection(id: UUID(), box: $0.boundingBox, confidence: $0.confidence,
-                                       humanSupported: true, matchedPersonBox: $0.boundingBox)
+                    associated = []
+                }
+                let detections = found.compactMap { candidate -> HumanDetection? in
+                    if useSmartColor &&
+                        !SmartColorBodyGate.permits(candidate.box, matchedBodies: associated) {
+                        return nil
                     }
+                    return HumanDetection(id: UUID(), box: candidate.box,
+                                          confidence: candidate.confidence,
+                                          humanSupported: true,
+                                          matchedPersonBox: candidate.box)
                 }
                 report = HumanAnalysis(detections: detections, imageSize: size, capturedAt: now,
                                        milliseconds: (ProcessInfo.processInfo.systemUptime - start) * 1000,
@@ -223,9 +399,33 @@ final class AIFrameAnalyzer: @unchecked Sendable {
                                        error: error.localizedDescription)
             }
             guard current(token) else { return }
+            let finishedAt = ProcessInfo.processInfo.systemUptime
+            lock.lock()
+            if report.milliseconds > 0 {
+                averagedMS = averagedMS == 0 ? report.milliseconds : averagedMS * 0.82 + report.milliseconds * 0.18
+            }
+            let shouldReport = finishedAt - lastTelemetryTime > 0.9 || thermal != lastThermal
+            if shouldReport { lastTelemetryTime = finishedAt; lastThermal = thermal }
+            let dropCount = droppedBusyCount
+            lock.unlock()
             Task { @MainActor in
                 guard self.current(token) else { return }
+                if shouldReport {
+                    VelmiraLiveDiagnostics.shared.updateInference(
+                        milliseconds: report.milliseconds, limit: effectiveRate,
+                        dropped: dropCount, temperature: thermal, error: report.error)
+                }
                 AIAnalysisState.shared.accept(report)
+                if report.error == nil && !report.visiblePlayerBoxes.isEmpty {
+                    let roster = MatchRoster.shared.names
+                        .filter { $0.side != .unknown }
+                        .map { KnownRosterPlayer(name: $0.name, side: $0.side) }
+                    if !roster.isEmpty {
+                        OnScreenNameplateOCR.shared.submit(
+                            frame.buffer, bodies: report.visiblePlayerBoxes,
+                            roster: roster, capturedAt: report.capturedAt)
+                    }
+                }
             }
         }
     }
@@ -238,7 +438,7 @@ struct AIAnalysisOverlay: View {
         TimelineView(.periodic(from: .now, by: 0.1)) { _ in
             GeometryReader { geometry in
                 if model.enabled, let result = model.result,
-                   ProcessInfo.processInfo.systemUptime - result.capturedAt < 0.8,
+                   ProcessInfo.processInfo.systemUptime - result.capturedAt < 1.25,
                    result.imageSize.width > 0, result.imageSize.height > 0 {
                     let scale = min(geometry.size.width / result.imageSize.width, geometry.size.height / result.imageSize.height)
                     let width = result.imageSize.width * scale
@@ -253,12 +453,39 @@ struct AIAnalysisOverlay: View {
                             .position(x: left + target.x * width, y: top + target.y * height)
                     }
                     if model.showPlayerBoxes {
+                        // Explain why no rectangle appears instead of silently
+                        // hiding all overlays when YOLO or the model cannot run.
+                        if let failure = result.error {
+                            Label("مربعات YOLO متوقفة — " + String(failure.prefix(100)),
+                                  systemImage: "exclamationmark.triangle.fill")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .padding(7)
+                                .background(Color.red.opacity(0.84), in: Capsule())
+                                .frame(maxWidth: geometry.size.width * 0.75, alignment: .leading)
+                                .position(x: geometry.size.width / 2, y: 31)
+                        } else if result.visiblePlayerBoxes.isEmpty {
+                            Text("YOLO يعمل — لا توجد أجسام مكتشفة. جرّب خفض عتبة الثقة.")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .padding(7)
+                                .background(Color.black.opacity(0.76), in: Capsule())
+                                .position(x: geometry.size.width / 2, y: 31)
+                        }
                         ForEach(result.visiblePlayerBoxes.indices, id: \.self) { index in
                             let body = result.visiblePlayerBoxes[index]
-                            Rectangle().stroke(Color.green, lineWidth: 2.5)
+                            let matches = model.liveNameMatches.filter {
+                                ProcessInfo.processInfo.systemUptime - $0.capturedAt <= 1.55 &&
+                                NameplateRosterAssociation.matchingBox(body, $0.body)
+                            }
+                            let named = matches.count == 1 ? matches.first : nil
+                            let boxColor: Color = named?.side == .friendly
+                                ? .cyan : (named?.side == .opponent ? .orange : .green)
+                            Rectangle().stroke(boxColor, lineWidth: 2.5)
                                 .frame(width: body.width * width, height: body.height * height)
                                 .overlay(alignment: .topLeading) {
-                                    Text(PlayerVisualCues.proximity(for: body))
+                                    Text(named.map { "\($0.name) • \($0.side == .friendly ? "محمي: من فريقي" : "خصم مؤكد")" } ??
+                                         (model.protectTeammates ? "مجهول — التتبع محظور" : PlayerVisualCues.proximity(for: body)))
                                         .font(.system(size: 10, weight: .bold))
                                         .foregroundStyle(Color.white)
                                         .padding(.horizontal, 5)
@@ -272,7 +499,13 @@ struct AIAnalysisOverlay: View {
                         }
                     }
                     ForEach(result.detections) { detection in
-                        if model.adaptiveBodyMarker, let body = detection.matchedPersonBox {
+                        if model.adaptiveBodyMarker, let body = detection.matchedPersonBox,
+                           TeamTargetSafety.trackingSample(
+                               from: result, names: model.liveNameMatches,
+                               roster: MatchRoster.shared.names.map { KnownRosterPlayer(name: $0.name, side: $0.side) },
+                               now: ProcessInfo.processInfo.systemUptime,
+                               requireConfirmedOpponent: model.protectTeammates
+                           ).boxes.contains(where: { NameplateRosterAssociation.matchingBox($0, body) }) {
                             let position = VisualBodyAssociation.selectedPoint(
                                 in: body, x: assistance.configuration.pointX,
                                 y: assistance.configuration.pointY)
@@ -303,37 +536,42 @@ struct AIAnalysisSettings: View {
                         .frame(maxWidth: .infinity, minHeight: 54)
                 }.buttonStyle(AcidButtonStyle(active: true))
                 VelmiraSection("الذكاء الاصطناعي — معاينة البث") {
-                    Button("إعداد التتبّع المدمج: لون + جسم") { model.prepareHybridTracking() }
+                    Toggle("حماية فريقي — تتبع الخصوم المؤكدين فقط", isOn: $model.protectTeammates)
+                    Text("مفعّلة افتراضياً: يمنع توجيه التصويب نحو الحليف أو أي لاعب مجهول. يتوقف التتبع حين لا يمكن قراءة اسم الخصم فوق جسمه بوضوح. يمكن تعطيلها يدوياً، لكن ذلك يعيد احتمال استهداف الحلفاء.")
+                        .font(.footnote).foregroundStyle(.orange)
+                    Button("كشف MW3 تلقائي — YOLOv8n المدرّب") { model.prepareHybridTracking() }
                     Toggle("تشغيل تحليل الصورة", isOn: $model.enabled)
-                    Toggle("استخدام لون علامة الخصم", isOn: $model.colorMode)
-                    if model.colorMode {
-                        Toggle("دمج كشف اللون مع تحليل الأشخاص بالذكاء الاصطناعي", isOn: $model.hybridMode)
-                        Text("يشترط لون العلامة مع جسم مكتشف ومطابقة واضحة بينهما. عند فقد أحدهما يتوقف التتبّع؛ لون العلامة لا يثبت الفريق وحده.")
-                            .font(.footnote)
+                    Text("YOLOv8n المدرّب على بيانات MW3 يكشف جسم اللاعب. وضع اللون الذكي الاختياري لا يطارد إشارات HUD المستقلة.")
+                    Toggle("تتبّع لون الاسم فوق جسم اللاعب — وضع ذكي اختياري",
+                           isOn: $model.smartColorTracking)
+                    Text("يستخدم لون الاسم المتحرك فقط إذا أمكن ربطه بجسم لاعب عبر YOLO؛ لا يتتبع علامة Point أو Mark أو A/B مستقلة. ومع حماية فريقي لا يُسمح بتحريك التصويب إلا نحو خصم مؤكّد الاسم. ترك الخيار متوقفاً يبقي سلوك YOLO السابق.")
+                        .font(.footnote)
+                    if model.smartColorTracking {
+                        Text("اختر اللون الظاهر فوق الخصم: 0 أحمر، 0.08 برتقالي، 0.83 وردي/أرجواني تقريباً.")
+                            .font(.caption)
+                        Slider(value: $model.colorHue, in: 0...1, step: 0.01) {
+                            Text("لون الاسم (Hue)")
+                        }
+                        Text("لون الهدف: \(Int(model.colorHue * 360))°")
+                            .font(.caption).monospacedDigit()
+                        Slider(value: $model.colorTolerance, in: 0.01...0.15, step: 0.005) {
+                            Text("سماحية اختلاف اللون")
+                        }
+                        Text("سماحية اللون: \(Int(model.colorTolerance * 360))°")
+                            .font(.caption).monospacedDigit()
                     }
-                    Toggle("إظهار مربعات خضراء حول اللاعبين المكتشفين", isOn: $model.showPlayerBoxes)
-                    Text("بجانب كل مربع يظهر قرب نسبي (قريب جدًا / قريب / متوسط / بعيد) حسب ارتفاع الجسم في الصورة، وليس مسافة بالمتر. الأجسام المكتشفة قد تشمل لاعبي فريقك.")
+                    Toggle("إظهار مربعات اللاعبين وتصنيف فريقهم", isOn: $model.showPlayerBoxes)
+                    Text("سماوي: لاعب فريقي محمي. برتقالي: خصم قرئ اسمه وتأكد عبر عدة إطارات. أخضر: غير مصنف، لا يُتتبّع في وضع حماية الفريق. القرب نسبي وليس بالمتر.")
                         .font(.footnote)
                     Toggle("إظهار موضع الجسم المختار مع تغير مسافة اللاعب", isOn: $model.adaptiveBodyMarker)
-                    Text("في الوضع المدمج تتبع نقطة التصويب الجسم المكتشف وتتكيف مع حجمه. إظهار العلامة خيار مرئي؛ حركة التحكم تحتاج تفعيل المساعدة وL2.")
+                    Text("يتتبع الموضع داخل الجسم مع قفل الهدف المستمر عند تفعيله، مع L2 وبدونه. إظهار العلامة خيار مرئي فقط.")
                         .font(.footnote)
                     Toggle("تقليل الأخطاء — تأكيد عبر الإطارات", isOn: $model.precisionMode)
                     if model.precisionMode {
-                        Text("الوضع المدمج يشترط صورتين للتحقق. الأوضاع الأخرى تستخدم 3 صور عند تفعيل هذا الخيار. لا تُرسل حركة نحو هدف غائب.")
+                        Text("يتطلب تأكيد هدف YOLO في صورتين متتابعتين قبل السماح بالقفل. لا يحرّك التصويب نحو هدف غائب.")
                             .font(.footnote).foregroundStyle(.orange)
-                        Text("التأكيد لا يثبت أن الشخصية من فريق الخصم. استخدم لون العلامة المميز وراجع النتائج.")
+                        Text("فئة Enemy في النموذج تقريبية، وقد تخطئ في تمييز الحليف من الخصم.")
                             .font(.footnote)
-                    }
-                    if model.colorMode {
-                        HStack {
-                            Button("أحمر") { model.colorHue = 0 }
-                            Button("أرجواني") { model.colorHue = 0.88 }
-                            Button("أصفر") { model.colorHue = 0.16 }
-                        }.buttonStyle(.bordered)
-                        Rectangle().fill(Color(hue: model.colorHue, saturation: 1, brightness: 1)).frame(height: 18)
-                        Slider(value: $model.colorHue, in: 0...1) { Text("لون العلامة") }
-                        Slider(value: $model.colorTolerance, in: 0.01...0.15) { Text("سماحية اللون") }
-                        Text("اختر لون اسم الخصم. أي عنصر بنفس اللون قد يُكشف خطأً؛ لا توجد معرفة بهوية اللاعب.")
                     }
                     Text("ابدأ اتصال PS5 من قسم اللعب. تظهر الإطارات فوق الأشخاص المحتملين داخل البث، دون إرسال الصور إلى خادم.")
                     Text("التحليل وحده للمعاينة. فعّل الحركة والماكروز بشكل منفصل من قسم التحكم.").foregroundStyle(.cyan)
@@ -347,9 +585,11 @@ struct AIAnalysisSettings: View {
                         Text("3").tag(3.0)
                         Text("5").tag(5.0)
                         Text("8").tag(8.0)
-                        Text("12 سريع").tag(12.0)
+                        Text("12").tag(12.0)
+                        Text("20 سريع").tag(20.0)
+                        Text("24 أقصى").tag(24.0)
                     }.pickerStyle(.segmented)
-                    Text("لا تعني هذه القيم معدل إطارات اللعبة. يُخفَّض التحليل تلقائيًا عند ارتفاع حرارة الجهاز.")
+                    Text("هذه طلبات لتحليل YOLO وليست FPS مضموناً. تُسقط الإطارات إذا كان التحليل مشغولاً، ويُخفَّض المعدّل عند حرارة الجهاز.")
                 }
                 VelmiraSection("حفظ إعدادات الذكاء الاصطناعي") {
                     Button {
@@ -379,6 +619,13 @@ struct AIAnalysisSettings: View {
                             else {
                                 Text("أجسام الأشخاص المكتشفة: \(result.visiblePlayerBoxes.count)")
                                 Text("أهداف التتبّع المؤهلة: \(result.detections.count)")
+                                if model.smartColorTracking {
+                                    Text("أجسام مطابقة للون قرب الاسم: \(result.detections.count)")
+                                    if result.detections.isEmpty && !result.visiblePlayerBoxes.isEmpty {
+                                        Text("لم يتطابق لون الاسم مع أي جسم؛ راجع اللون والسماحية. لا يتم اختيار نقاط HUD.")
+                                            .font(.footnote).foregroundStyle(.orange)
+                                    }
+                                }
                                 Text("زمن التحليل: \(Int(result.milliseconds)) ms")
                                 if ProcessInfo.processInfo.systemUptime - result.capturedAt >= 0.8 {
                                     Text("لا توجد نتيجة حديثة؛ الإطارات القديمة مخفية.")
@@ -388,7 +635,7 @@ struct AIAnalysisSettings: View {
                     }
                 }
                 VelmiraSection("حدود الكشف") {
-                    Text("Apple Vision نموذج عام، غير مدرَّب هنا على Call of Duty. قد يفوّت الشخصيات أو يكتشف مناطق خاطئة، ولا يميز الخصم من الصديق أو يؤكد موت الشخصية. درجة الثقة ليست ضمانًا.")
+                    Text("نموذج YOLOv8n بدقة 640 مدرّب على 214 صورة من بيانات MW3 المتاحة. نتائج الاختبار محدودة، وقد يفوّت خصوماً أو يخلط بين الحلفاء والأعداء.")
                     Text("دقة 99٪ هدف للاختبار ببيانات حقيقية، وليست نتيجة مثبتة. لتقييم الدقة نحتاج قياس الاكتشافات الصحيحة والمفقودة والخاطئة.")
                     Text("نسخة تطوير: الأداء والاتصال بحاجة لتجربة على iPhone 17 Pro وPS5.")
                 }
@@ -405,10 +652,6 @@ struct AIAnalysisSettings: View {
     }
 }
 
-enum RosterSide: String, CaseIterable, Identifiable, Codable, Sendable {
-    case unknown = "غير مصنف", friendly = "فريقي", opponent = "الخصوم"
-    var id: String { rawValue }
-}
 struct RosterName: Identifiable, Codable {
     var id = UUID()
     var name: String
@@ -430,14 +673,17 @@ struct AutoRosterCandidate: Sendable {
 final class MatchRoster: ObservableObject {
     static let shared = MatchRoster()
     @Published var names: [RosterName] = [] {
-        didSet { saveRoster() }
+        didSet {
+            saveRoster()
+            AIAnalysisState.shared.invalidateRosterMatches()
+        }
     }
     @Published var reading = false
-    @Published var message = "ابدأ مباراة جديدة ثم أضف صورة لوحة النتائج."
+    @Published var message = "افتح لوحة النتائج داخل PS5، ثم اضغط زر قراءة الفريقين في شريط البث."
     @Published var matchNumber = 1
     @Published var autoScanEnabled = UserDefaults.standard.object(forKey: "velmira.roster.autoscan.v1") as? Bool ?? true {
         didSet {
-            AutoRosterScanner.shared.configure(enabled: autoScanEnabled)
+            // Manual scoreboard OCR remains separate from YOLO body inference.
             if !autoScanEnabled { pending.removeAll() }
         }
     }
@@ -449,7 +695,7 @@ final class MatchRoster: ObservableObject {
     func restoreAutoScanSetting() {
         autoScanEnabled = UserDefaults.standard.object(forKey: "velmira.roster.autoscan.v1") as? Bool ?? true
     }
-    @Published private(set) var autoStatus = "يُراقب الأسماء الملونة أثناء بث PS5 عند تفعيل الاكتشاف."
+    @Published private(set) var autoStatus = "بانتظار قراءة لوحة النتائج من صورة البث."
     private struct Pending {
         var side: RosterSide
         var hex: String
@@ -549,126 +795,260 @@ final class MatchRoster: ObservableObject {
         autoStatus = "بدأت مباراة جديدة. سيُعاد اكتشاف أسماء الفريقين."
         message = "تم مسح بيانات المباراة السابقة."
     }
+    /// Manual capture only: users open the MW3 scoreboard and press the button.
+    /// OCR runs off the main/UI thread and never changes YOLO inference or controller output.
     func read(_ data: Data) async {
+        guard let image = UIImage(data: data)?.cgImage else {
+            message = "الصورة غير صالحة."
+            return
+        }
+        await read(image)
+    }
+
+    func read(_ image: CGImage) async {
         guard !reading else { return }
         reading = true
-        let token = UUID()
-        generation = token
-        message = "جارٍ قراءة النصوص محلياً…"
-        let result = await Task.detached(priority: .userInitiated) { () -> Result<[String], Error> in
-            do {
-                let request = VNRecognizeTextRequest()
-                request.recognitionLevel = .accurate
-                request.usesLanguageCorrection = false
-                request.automaticallyDetectsLanguage = true
-                try VNImageRequestHandler(data: data, options: [:]).perform([request])
-                var seen = Set<String>()
-                let names = (request.results ?? []).compactMap { observation -> String? in
-                    guard let candidate = observation.topCandidates(1).first,
-                          candidate.confidence >= 0.55 else { return nil }
-                    let text = candidate.string.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard text.count >= 2, text.count <= 64,
-                          text.rangeOfCharacter(from: .letters) != nil,
-                          seen.insert(text.lowercased()).inserted else { return nil }
-                    return text
-                }
-                return .success(names)
-            } catch { return .failure(error) }
-        }.value
-        guard generation == token else { return }
-        reading = false
-        switch result {
-        case .success(let values):
-            let existing = Set(names.map { $0.name.lowercased() })
-            names.append(contentsOf: values.filter { !existing.contains($0.lowercased()) }.map { RosterName(name: $0) })
-            message = values.isEmpty ? "لم تُقرأ أسماء واضحة. استخدم صورة أوضح." : "راجع النصوص: قد تتضمن عناوين وإحصاءات. صحّح الأسماء وحدد الفريق لكل اسم."
-        case .failure(let error):
-            message = "تعذرت القراءة: " + error.localizedDescription
+        message = "جارٍ قراءة أسماء اللاعبين من لوحة النتائج..."
+        defer { reading = false }
+        let captured = ScoreboardCapturedImage(image: image)
+        do {
+            let items = try await Task.detached(priority: .userInitiated) {
+                try MW3ScoreboardOCR.read(captured.image)
+            }.value
+            guard !items.isEmpty else {
+                message = "لم أتعرف على لوحة نتائج MW3. افتح لوحة النتائج كاملة وجرّب مرة أخرى."
+                VelmiraLiveDiagnostics.shared.record("OCR", "فشل قراءة لوحة النتائج")
+                return
+            }
+            // Keep previous user-confirmed edits. The rest are refreshed from
+            // the requested screenshot; no background or speculative additions.
+            var updated = names.filter { $0.isConfirmedByUser == true }
+            let confirmed = Set(updated.map {
+                $0.name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            })
+            var seen = confirmed
+            for item in items {
+                let normalized = item.name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+                guard seen.insert(normalized).inserted, updated.count < 64 else { continue }
+                updated.append(RosterName(name: item.name, side: item.side,
+                                          nameColorHEX: nil,
+                                          isConfirmedByUser: false))
+            }
+            names = updated
+            let friendly = items.filter { $0.side == .friendly }.count
+            let opponent = items.filter { $0.side == .opponent }.count
+            let unknown = items.filter { $0.side == .unknown }.count
+            autoStatus = "آخر قراءة: فريقي \(friendly) • الخصوم \(opponent) • غير مصنف \(unknown)"
+            message = "تم استخراج \(items.count) اسماً. تتم مطابقتها أثناء اللعب عند ظهور الاسم فوق الجسم."
+            VelmiraLiveDiagnostics.shared.record("OCR", "لوحة النتائج: \(friendly) فريقي / \(opponent) خصوم / \(unknown) غير مصنف")
+        } catch {
+            message = "تعذرت قراءة لوحة النتائج: \(error.localizedDescription)"
         }
     }
+
+    func swapDetectedSides() {
+        for index in names.indices where names[index].side != .unknown {
+            names[index].side = names[index].side == .friendly ? .opponent : .friendly
+            names[index].isConfirmedByUser = true
+        }
+        message = "تم تبديل الفريقين وتثبيت التصنيف يدوياً."
+    }
 }
+
+// The CGImage is immutable; it is safe to transfer a captured image to a
+// dedicated OCR task without touching a live CVPixelBuffer on another queue.
+private struct ScoreboardCapturedImage: @unchecked Sendable {
+    let image: CGImage
+}
+
+/// On-demand OCR of the *visible scoreboard only*. This deliberately never
+/// guesses in-game body identity from scoreboard row order.
+private enum MW3ScoreboardOCR {
+    private struct Line {
+        let text: String
+        let rect: CGRect
+        let confidence: Float
+    }
+
+    private static let blocked: Set<String> = [
+        "SCORE", "SCOREBOARD", "KILLS", "DEATHS", "ASSISTS",
+        "PING", "LATENCY", "TIME", "TEAM", "PLAYERS", "OBJECTIVES",
+        "MATCH", "STATS", "RANK", "NAME", "PLAYER", "LEVEL",
+        "WIN", "LOSS", "WINS", "LOSSES", "MUTE", "REPORT",
+        "SETTINGS", "COD", "MW3", "MWIII", "XP", "SPECTATING",
+        "MUTED", "DISPLAY", "FRIENDS", "SOCIAL", "TAC-MAP",
+        "BACK", "EXIT", "OPTIONS", "CONTINUE", "YOU",
+        "SPECTATOR", "K/D", "K/D/A", "KD", "KDA", "MS"
+    ]
+
+    static func read(_ image: CGImage) throws -> [AutoRosterCandidate] {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = false // Do not auto-correct gamer tags.
+        request.recognitionLanguages = ["en-US"]
+        request.minimumTextHeight = 0.010
+        try VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
+        let lines: [Line] = (request.results ?? []).compactMap { line in
+            guard let top = line.topCandidates(1).first, top.confidence >= 0.24 else { return nil }
+            let name = top.string.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty else { return nil }
+            return Line(text: name, rect: line.boundingBox, confidence: top.confidence)
+        }
+        let cues = lines.filter { line in
+            let t = line.text.uppercased()
+            return t.contains("SCORE") || t.contains("KILLS") ||
+                   t.contains("DEATHS") || t.contains("LATENCY") ||
+                   t.contains("PING") || t.contains("SCOREBOARD")
+        }
+        // Refuse to pollute the roster when this is ordinary gameplay HUD.
+        guard cues.count >= 2 || cues.contains(where: { $0.text.uppercased().contains("SCOREBOARD") }) else {
+            return []
+        }
+        let headerLines = lines.filter { line in
+            let t = line.text.uppercased()
+            return t.contains("TASK FORCE") || t.contains("SPETSNAZ") ||
+                   t.contains("SPECGRU") || t.contains("RANGERS") ||
+                   t.contains("KORTAC") || t.contains("KOR TAC") ||
+                   t.contains("NAVY SEALS") || t.contains("MILITIA") ||
+                   t.contains("OPFOR") || t.contains("[6/6]") ||
+                   t.contains("(6/6)")
+        }
+        var rows = lines.filter { line in
+            let name = line.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let uppercase = name.uppercased()
+            guard !headerLines.contains(where: { $0.text == line.text && $0.rect == line.rect }),
+                  !uppercase.contains("TASK FORCE"), !uppercase.contains("SPETSNAZ"),
+                  !uppercase.contains("SPECGRU"), !uppercase.contains("SCOREBOARD"),
+                  !uppercase.contains("RANGERS"), !uppercase.contains("KORTAC") else { return false }
+            let words = uppercase.split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            let allowedPunctuation = CharacterSet(charactersIn: "_-#[]. ")
+            let filteredText = name.unicodeScalars.filter {
+                CharacterSet.letters.contains($0) || CharacterSet.decimalDigits.contains($0) ||
+                allowedPunctuation.contains($0)
+            }
+            guard filteredText.count >= name.unicodeScalars.count - 2,
+                  name.count >= 3, name.count <= 30,
+                  name.unicodeScalars.filter({ CharacterSet.letters.contains($0) }).count >= 2,
+                  !(words.count == 1 && blocked.contains(uppercase)),
+                  !words.contains(where: { blocked.contains(String($0)) && words.count <= 2 }),
+                  line.rect.minX >= 0.055, line.rect.minX <= 0.50,
+                  line.rect.midY >= 0.12, line.rect.midY <= 0.88,
+                  line.rect.width <= 0.42, line.rect.height <= 0.064 else { return false }
+            // Text directly above the scoreboard column headings is not a player.
+            return !cues.contains(where: { abs($0.rect.midY - line.rect.midY) < 0.012 })
+        }
+        rows.sort { $0.rect.midY > $1.rect.midY }
+        guard !rows.isEmpty else { return [] }
+
+        // MWIII scoreboard layout supplied by the user:
+        // UPPER BLUE section = player's team; LOWER RED section = opponents.
+        // OCR positions use bottom-left coordinates, sorted from top to bottom.
+        // Prefer the largest inter-section gap relative to ordinary row spacing
+        // instead of an arbitrary fixed 6.5% separation.
+        let gaps = zip(rows, rows.dropFirst()).enumerated().map { index, pair in
+            (index, pair.0.rect.midY - pair.1.rect.midY)
+        }.filter { $0.1 > 0 }
+        let sortedSpaces = gaps.map { $0.1 }.sorted()
+        let typicalSpacing = sortedSpaces.isEmpty ? 0.0 : sortedSpaces[sortedSpaces.count / 2]
+        // Distinct upper and lower team headers give a stronger split than
+        // relying on an arbitrary gap between OCR lines.
+        let headerYs = headerLines.map { $0.rect.midY }.sorted(by: >)
+        let sectionHeaderPair: (upper: CGFloat, lower: CGFloat)? = headerYs.count >= 2 &&
+            headerYs[0] - headerYs[1] >= 0.09 ?
+            (upper: headerYs[0], lower: headerYs[1]) : nil
+        let headerSplit = sectionHeaderPair.flatMap { header -> Int? in
+            guard let lastUpper = rows.lastIndex(where: {
+                $0.rect.midY < header.upper - 0.012 &&
+                $0.rect.midY > header.lower + 0.012
+            }), lastUpper >= 1, rows.count - lastUpper - 1 >= 2 else { return nil }
+            return lastUpper
+        }
+        let gapSplit = gaps
+            .filter { $0.0 + 1 >= 2 && rows.count - $0.0 - 1 >= 2 }
+            .filter { $0.1 >= max(0.026, typicalSpacing * 1.60) }
+            .max(by: { $0.1 < $1.1 })?.0
+        let validSplit = headerSplit ?? gapSplit
+        // If the two colored sections are not visually separable, leave names
+        // unclassified. Never silently mark a friendly as an opponent.
+        let colors: [RosterSide: String] = [
+            .friendly: "#22A8F0", .opponent: "#FF683F", .unknown: "#9A9A9A"
+        ]
+        var result: [AutoRosterCandidate] = []
+        var seen = Set<String>()
+        for (index, line) in rows.enumerated() {
+            let clean = line.text
+                .replacingOccurrences(of: #"^[0-9]{1,3}\s+"#, with: "", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard clean.count >= 3 else { continue }
+            let key = clean.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            guard seen.insert(key).inserted else { continue }
+            let side: RosterSide
+            if let validSplit {
+                // Assign top/bottom based on the common friendly-first HUD
+                // layout; users can swap/correct it in the roster view.
+                side = index <= validSplit ? .friendly : .opponent
+            } else { side = .unknown }
+            result.append(AutoRosterCandidate(name: clean, side: side, hex: colors[side]!))
+            if result.count == 24 { break }
+        }
+        return result
+    }
+}
+
 struct MatchRosterView: View {
     @ObservedObject private var roster = MatchRoster.shared
-    @State private var autoScanSavedNotice = ""
-    @State private var photo: PhotosPickerItem?
-    @State private var showReset = false
-    @State private var newName = ""
     var body: some View {
         ScrollView {
-            VStack(spacing: 16) {
-                VelmiraSection("قائمة المباراة \(roster.matchNumber)") {
-                    Text("قراءة أسماء لوحة النتائج بالذكاء الاصطناعي على جهازك.")
-                    Toggle("التقاط أسماء اللاعبين تلقائيًا أثناء بث PS5", isOn: $roster.autoScanEnabled)
-                    Button {
-                        roster.saveAutoScanSetting()
-                        autoScanSavedNotice = "تم حفظ إعداد التقاط الأسماء التلقائي."
-                    } label: {
-                        Label("حفظ إعدادات قائمة الفرق", systemImage: "square.and.arrow.down")
-                            .frame(maxWidth: .infinity, minHeight: 44)
-                    }
-                    .buttonStyle(AcidButtonStyle(active: true))
-                    if !autoScanSavedNotice.isEmpty {
-                        Text(autoScanSavedNotice).font(.footnote)
-                    }
-                    Text("الأحمر الغامق = الخصوم، الأزرق = فريقي. يتطلب تكرار الاسم في لقطتين على الأقل؛ التصنيف تقريبي ويحتاج مراجعة.")
-                        .font(.footnote).foregroundStyle(.orange)
-                    Text(roster.autoStatus).font(.footnote)
-                    Text("بدء مباراة جديدة لا يُكتشف تلقائيًا بعد؛ استخدم زر مسح القائمتين عند تغيير المباراة.")
-                        .font(.footnote)
-                    PhotosPicker(selection: $photo, matching: .images) {
-                        Label("قراءة صورة لوحة النتائج", systemImage: "text.viewfinder")
-                            .frame(maxWidth: .infinity, minHeight: 48)
-                    }.buttonStyle(AcidButtonStyle(active: true)).disabled(roster.reading)
-                    if roster.reading { ProgressView() }
-                    Text(roster.message).font(.footnote)
-                    Button("مباراة جديدة — مسح القائمتين", role: .destructive) { showReset = true }
+            VStack(alignment: .leading, spacing: 14) {
+                Text("قراءة أسماء الفريقين من لوحة النتائج")
+                    .font(.headline)
+                Text("أثناء بث PS5 افتح لوحة النتائج في MW3، واضغط «قراءة الفريقين» من شريط البث. تُستخدم قراءة النصوص OCR للأسماء، ويستمر YOLO في كشف أجسام اللاعبين بشكل منفصل.")
+                    .font(.footnote)
+                Text(roster.message)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                if roster.reading {
+                    ProgressView("جارٍ قراءة الأسماء...")
                 }
+                Text(roster.autoStatus)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
                 ForEach(RosterSide.allCases) { side in
-                    VelmiraSection("\(side.rawValue) • \(roster.names.filter { $0.side == side }.count)") {
-                        if !roster.names.contains(where: { $0.side == side }) {
-                            Text("لا توجد أسماء").font(.footnote)
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            Text(side.rawValue).font(.headline)
+                            Spacer()
+                            Text("\(roster.names.filter { $0.side == side }.count)")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
                         }
                         ForEach($roster.names) { $entry in
                             if entry.side == side {
                                 RosterEntryEditor(entry: $entry) {
-                                    roster.names.removeAll { $0.id == entry.id }
+                                    let id = entry.id
+                                    roster.names.removeAll { $0.id == id }
                                 }
+                                .padding(10)
+                                .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
                             }
                         }
                     }
+                    .padding(12)
+                    .background(Color.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 15))
                 }
-                VelmiraSection("إضافة اسم يدوياً") {
-                    TextField("اسم اللاعب", text: $newName).textFieldStyle(AcidFieldStyle())
-                        .textInputAutocapitalization(.never).autocorrectionDisabled()
-                    Button("إضافة للمراجعة") {
-                        let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
-                        if !name.isEmpty { roster.names.append(RosterName(name: name)); newName = "" }
-                    }.disabled(newName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
+                Button("تبديل الفريقين بعد قراءة خاطئة") { roster.swapDetectedSides() }
+                    .buttonStyle(.bordered)
+                Button("بداية مباراة جديدة", role: .destructive) { roster.reset() }
+                    .buttonStyle(.bordered)
+                Text("لا يستطيع YOLO تحديد صاحب كل اسم بمجرد قراءة لوحة النتائج. ربط اسم معيّن بمربع لاعب يتطلب ظهور اسمه فوق الجسم في صورة اللعب نفسها.")
+                    .font(.footnote)
+                    .foregroundStyle(.orange)
             }.padding(20)
         }
-        .background(TPPlayTheme.canvas)
-        .navigationTitle("الفريق والخصوم")
-        .navigationBarTitleDisplayMode(.inline)
-        .onDisappear { roster.restoreAutoScanSetting() }
+        .navigationTitle("قائمة فريقي والخصوم")
         .environment(\.layoutDirection, .rightToLeft)
-        .confirmationDialog("مسح جميع أسماء المباراة السابقة؟", isPresented: $showReset, titleVisibility: .visible) {
-            Button("بدء مباراة جديدة", role: .destructive) { roster.reset() }
-        }
-        .onChange(of: photo) { _, item in
-            guard let item else { return }
-            Task {
-                do {
-                    if let data = try await item.loadTransferable(type: Data.self) { await roster.read(data) }
-                    else { roster.message = "تعذر تحميل الصورة." }
-                } catch { roster.message = "تعذر تحميل الصورة: " + error.localizedDescription }
-                photo = nil
-            }
-        }
     }
 }
-
-
 /// Keep the name/color editor small to avoid complex SwiftUI type-checking in the roster.
 private struct RosterEntryEditor: View {
     @Binding var entry: RosterName
@@ -723,150 +1103,3 @@ private struct RosterEntryEditor: View {
 }
 
 
-/// Low-rate, read-only scoreboard/nameplate OCR. Classification is provisional.
-/// This component never sends controller input or enables any assistance mode.
-final class AutoRosterScanner: @unchecked Sendable {
-    static let shared = AutoRosterScanner()
-
-    private let lock = NSLock()
-    private let queue = DispatchQueue(label: "app.velmira.roster.ocr", qos: .utility)
-    private var enabled = UserDefaults.standard.object(forKey: "velmira.roster.autoscan.v1") as? Bool ?? true
-    private var paused = true
-    private var busy = false
-    private var lastRun: TimeInterval = 0
-    private var generation: UInt64 = 0
-
-    func configure(enabled: Bool) {
-        lock.lock()
-        self.enabled = enabled
-        generation &+= 1
-        lock.unlock()
-    }
-
-    func setPaused(_ pause: Bool) {
-        lock.lock()
-        paused = pause
-        generation &+= 1
-        lock.unlock()
-    }
-
-    private func active(_ token: UInt64) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return enabled && !paused && generation == token
-    }
-
-    func submit(_ buffer: CVPixelBuffer) {
-        let now = ProcessInfo.processInfo.systemUptime
-        let state = ProcessInfo.processInfo.thermalState
-        let interval: TimeInterval = (state == .serious || state == .critical) ? 3 : 1.5
-        lock.lock()
-        guard enabled && !paused && !busy && now - lastRun >= interval else {
-            lock.unlock()
-            return
-        }
-        busy = true
-        lastRun = now
-        let token = generation
-        lock.unlock()
-
-        let frame = RetainedVideoFrame(buffer)
-        queue.async { [self, frame] in
-            defer {
-                lock.lock()
-                busy = false
-                lock.unlock()
-            }
-            guard active(token) else { return }
-
-            let request = VNRecognizeTextRequest()
-            request.recognitionLevel = .fast
-            request.usesLanguageCorrection = false
-            do {
-                try VNImageRequestHandler(cvPixelBuffer: frame.buffer, orientation: .up, options: [:])
-                    .perform([request])
-                guard active(token) else { return }
-                let observations = (request.results ?? []).filter { observation in
-                    let box = observation.boundingBox
-                    return box.width > 0.018 && box.width < 0.32 &&
-                           box.height > 0.008 && box.height < 0.065
-                }
-                guard !observations.isEmpty else { return }
-
-                let ci = CIImage(cvPixelBuffer: frame.buffer)
-                guard let image = CIContext(options: [.useSoftwareRenderer: false])
-                    .createCGImage(ci, from: ci.extent) else { return }
-
-                let candidates = observations.compactMap { item -> AutoRosterCandidate? in
-                    guard let recognized = item.topCandidates(1).first,
-                          recognized.confidence >= 0.55 else { return nil }
-                    let name = recognized.string.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard name.count >= 2, name.count <= 24,
-                          name.rangeOfCharacter(from: .letters) != nil,
-                          !name.contains("\n") else { return nil }
-                    guard let detected = Self.readNameColor(in: image, box: item.boundingBox) else {
-                        return nil
-                    }
-                    return AutoRosterCandidate(name: name, side: detected.side, hex: detected.hex)
-                }
-                guard !candidates.isEmpty, active(token) else { return }
-                Task { @MainActor in
-                    guard self.active(token) else { return }
-                    MatchRoster.shared.acceptAutoCandidates(candidates, sampledAt: now)
-                }
-            } catch {
-                // OCR failures do not interrupt the live video session.
-            }
-        }
-    }
-
-    private static func readNameColor(in image: CGImage, box: CGRect)
-        -> (side: RosterSide, hex: String)? {
-        let rect = CGRect(x: box.minX * CGFloat(image.width),
-                          y: (1 - box.maxY) * CGFloat(image.height),
-                          width: box.width * CGFloat(image.width),
-                          height: box.height * CGFloat(image.height)).integral
-            .intersection(CGRect(x: 0, y: 0, width: CGFloat(image.width),
-                                 height: CGFloat(image.height)))
-        guard !rect.isNull, rect.width >= 4, rect.height >= 3,
-              let cropped = image.cropping(to: rect) else { return nil }
-        let w = min(96, cropped.width)
-        let h = min(24, cropped.height)
-        var pixels = [UInt8](repeating: 0, count: w * h * 4)
-        let rendered = pixels.withUnsafeMutableBytes { raw -> Bool in
-            guard let ctx = CGContext(data: raw.baseAddress, width: w, height: h,
-                                      bitsPerComponent: 8, bytesPerRow: w * 4,
-                                      space: CGColorSpaceCreateDeviceRGB(),
-                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
-            else { return false }
-            ctx.draw(cropped, in: CGRect(x: 0, y: 0, width: CGFloat(w), height: CGFloat(h)))
-            return true
-        }
-        guard rendered else { return nil }
-
-        var redCount = 0, blueCount = 0
-        var red = (0, 0, 0), blue = (0, 0, 0)
-        for i in stride(from: 0, to: pixels.count, by: 4) {
-            let r = Int(pixels[i]), g = Int(pixels[i+1]), b = Int(pixels[i+2])
-            if r >= 52 && r > Int(Double(g) * 1.45) && r > Int(Double(b) * 1.4) {
-                redCount += 1
-                red.0 += r; red.1 += g; red.2 += b
-            } else if b >= 65 && b > Int(Double(r) * 1.35) &&
-                      b > Int(Double(g) * 1.1) {
-                blueCount += 1
-                blue.0 += r; blue.1 += g; blue.2 += b
-            }
-        }
-        // Avoid ambiguous mixed-color names and backgrounds.
-        guard max(redCount, blueCount) >= 4 else { return nil }
-        if redCount >= blueCount * 3 && redCount >= 4 {
-            return (.opponent, String(format: "#%02X%02X%02X",
-                                     red.0 / redCount, red.1 / redCount, red.2 / redCount))
-        }
-        if blueCount >= redCount * 3 && blueCount >= 4 {
-            return (.friendly, String(format: "#%02X%02X%02X",
-                                     blue.0 / blueCount, blue.1 / blueCount, blue.2 / blueCount))
-        }
-        return nil
-    }
-}

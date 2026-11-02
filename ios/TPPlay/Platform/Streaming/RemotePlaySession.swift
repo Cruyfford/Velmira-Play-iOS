@@ -650,7 +650,10 @@ final class RemotePlaySession: ObservableObject {
         inputSuspended = false
         assistanceEngine.reset()
         if AssistanceState.shared.armed {
-            AssistanceState.shared.report(target: nil, status: "مفعّلة — اترك L2 وR2 ثم اضغط L2")
+            AssistanceState.shared.report(target: nil, status:
+                AssistanceState.shared.configuration.trackingWithoutL2 == true
+                    ? "مفعّلة — يبحث عن هدف مرئي مع L2 وبدونه"
+                    : "مفعّلة — اترك L2 وR2 ثم اضغط L2")
         }
     }
 
@@ -658,11 +661,19 @@ final class RemotePlaySession: ObservableObject {
         guard !isStopped, !inputSuspended, let session, case .connected = state else { return }
         let ai = AIAnalysisState.shared
         let assistance = AssistanceState.shared
+        // Controller tracking consumes only team-safe bodies, not raw YOLO
+        // detections: a trained "Enemy" label can still belong to a teammate.
+        let now = ProcessInfo.processInfo.systemUptime
         let sample = ai.enabled ? ai.result.map {
-            $0.trackingSample(colorMode: ai.colorMode, hybridMode: ai.hybridMode)
+            TeamTargetSafety.trackingSample(
+                from: $0, names: ai.liveNameMatches,
+                roster: MatchRoster.shared.names.map {
+                    KnownRosterPlayer(name: $0.name, side: $0.side)
+                },
+                now: now, requireConfirmedOpponent: ai.protectTeammates)
         } : nil
         let result = assistanceEngine.step(
-            now: ProcessInfo.processInfo.systemUptime, armed: assistance.armed,
+            now: now, armed: assistance.armed,
             l2: Double(controller.l2) / 255, r2: Double(controller.r2) / 255,
             rawX: Double(controller.right_x) / 32767, rawY: Double(controller.right_y) / 32767,
             sample: sample, config: assistance.configuration)
@@ -673,7 +684,13 @@ final class RemotePlaySession: ObservableObject {
         if result.switchWeapon { outgoing.buttons |= 1 << 3 }
         _ = tp_play_session_set_controller(session, &outgoing)
         assistance.report(target: result.target, status: !assistance.armed ? "متوقف" :
-            (result.target == nil ? "مفعّل — بانتظار L2 وهدف حديث" : "تتبّع هدف محتمل"))
+            (result.target == nil
+                ? (ai.protectTeammates && (sample?.boxes.isEmpty ?? true)
+                    ? "حماية الفريق: لا يوجد خصم مؤكّد؛ التتبّع متوقف"
+                    : (assistance.configuration.trackingWithoutL2 == true
+                        ? "مفعّل — يبحث عن خصم حديث (بدون اشتراط L2)"
+                        : "مفعّل — بانتظار L2 وهدف حديث"))
+                : (ai.protectTeammates ? "قفل على خصم مؤكّد بالاسم" : "قفل على هدف مرئي محتمل")))
     }
 
     fileprivate func receiveEvent(type: Int32, value: Int32, message: String?) {
