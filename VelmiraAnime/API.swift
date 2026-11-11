@@ -93,6 +93,66 @@ enum API {
     }
 }
 
+// MARK: - Video resolving
+
+struct VideoTarget {
+    let url: URL
+    let cookie: String
+}
+
+extension API {
+    /// Preferred flow (same as the Velmira app): the DEVICE asks the provider for the
+    /// encrypted video link (so the link is issued for the device's own IP and cookies),
+    /// then the Worker only decrypts it. Falls back to the Worker-side /v2/play.
+    static func resolveVideo(epID: String, quality: String, token: String) async throws -> VideoTarget {
+        do {
+            return try await resolveOnDevice(epID: epID, quality: quality, token: token)
+        } catch APIError.unauthorized {
+            throw APIError.unauthorized
+        } catch {
+            let obj = try await request("/v2/play/\(enc(epID))?quality=\(enc(quality))", token: token)
+            let link = str(obj["url"])
+            guard link.lowercased().hasPrefix("http"), let url = URL(string: link) else {
+                throw APIError.message("الخادم لم يرجع رابط فيديو صالح")
+            }
+            return VideoTarget(url: url, cookie: "")
+        }
+    }
+
+    static func resolveOnDevice(epID: String, quality: String, token: String) async throws -> VideoTarget {
+        let boot = try await request("/v2/video-bootstrap/\(enc(epID))?quality=\(enc(quality))", token: token)
+        let api = str(boot["apiUrl"])
+        guard let apiURL = URL(string: api), let host = apiURL.host, let scheme = apiURL.scheme else {
+            throw APIError.message("لم يرجع الخادم عنوان مصدر الفيديو")
+        }
+        let origin = "\(scheme)://\(host)"
+        var req = URLRequest(url: apiURL)
+        req.httpMethod = "POST"
+        req.timeoutInterval = 40
+        req.setValue(providerUA, forHTTPHeaderField: "User-Agent")
+        req.setValue("application/json,text/plain,*/*", forHTTPHeaderField: "Accept")
+        req.setValue("application/x-www-form-urlencoded; charset=UTF-8", forHTTPHeaderField: "Content-Type")
+        req.setValue(origin, forHTTPHeaderField: "Origin")
+        req.setValue(origin + "/", forHTTPHeaderField: "Referer")
+        req.httpBody = "command=getVideoURL&epID=\(enc(epID))&quality=\(enc(quality))".data(using: .utf8)
+
+        let result = try await URLSession.shared.data(for: req)
+        let code = (result.1 as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200..<300).contains(code) else { throw APIError.message("مصدر الفيديو أعاد HTTP \(code)") }
+        let payload = String(data: result.0, encoding: .utf8) ?? ""
+        guard !payload.isEmpty else { throw APIError.message("مصدر الفيديو أعاد رداً فارغاً") }
+
+        let dec = try await request("/v2/video-decrypt", method: "POST", body: ["payload": payload], token: token)
+        let link = str(dec["url"])
+        guard link.lowercased().hasPrefix("http"), let url = URL(string: link) else {
+            throw APIError.message("تعذر فك رابط الفيديو")
+        }
+        let cookies = HTTPCookieStorage.shared.cookies(for: apiURL) ?? []
+        let cookie = cookies.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
+        return VideoTarget(url: url, cookie: cookie)
+    }
+}
+
 // MARK: - Models
 
 struct Anime: Identifiable, Hashable {

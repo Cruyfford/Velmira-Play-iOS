@@ -407,6 +407,7 @@ struct SearchView: View {
 struct PlayItem: Identifiable {
     let id = UUID()
     let url: URL
+    let cookie: String
     let title: String
 }
 
@@ -625,13 +626,9 @@ struct DetailView: View {
         defer { preparing = nil }
         let quality = UserDefaults.standard.string(forKey: "quality") ?? "2"
         do {
-            let obj = try await API.request("/v2/play/\(enc(ep.id))?quality=\(enc(quality))", token: token)
-            let link = str(obj["url"])
-            guard link.lowercased().hasPrefix("http"), let url = URL(string: link) else {
-                throw APIError.message("الخادم لم يرجع رابط فيديو صالح")
-            }
+            let target = try await API.resolveVideo(epID: ep.id, quality: quality, token: token)
             history.record(animeID: anime.id, episode: ep.number)
-            playing = PlayItem(url: url, title: "\(anime.name) - الحلقة \(ep.number)")
+            playing = PlayItem(url: target.url, cookie: target.cookie, title: "\(anime.name) - الحلقة \(ep.number)")
         } catch APIError.unauthorized {
             session.logout()
             error = "انتهت الجلسة، سجّل الدخول من جديد"
